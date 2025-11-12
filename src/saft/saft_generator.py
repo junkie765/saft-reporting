@@ -62,7 +62,7 @@ class SAFTGenerator:
         self._add_header(root, saft_data['header'], start_date, end_date)
         
         # Add MasterFiles
-        self._add_master_files(root, saft_data['master_files'])
+        self._add_master_files(root, saft_data['master_files'], saft_data.get('tax_codes', []))
         
         # Add GeneralLedgerEntries
         self._add_general_ledger_entries(root, saft_data['general_ledger_entries'])
@@ -161,7 +161,7 @@ class SAFTGenerator:
         
         logger.debug("Header section added")
     
-    def _add_master_files(self, root: ET.Element, master_files: Dict):
+    def _add_master_files(self, root: ET.Element, master_files: Dict, tax_codes: list):
         """Add MasterFilesMonthly section according to Bulgarian SAF-T schema"""
         # Use MasterFilesMonthly for monthly reporting
         master_elem = self._elem(root, "MasterFilesMonthly")
@@ -178,9 +178,9 @@ class SAFTGenerator:
         suppliers_elem = self._elem(master_elem, "Suppliers")
         self._add_suppliers(suppliers_elem, master_files['suppliers'])
         
-        # TaxTable (required) - Add minimal VAT tax table
+        # TaxTable (required) - Add tax codes from Salesforce
         tax_table_elem = self._elem(master_elem, "TaxTable")
-        self._add_tax_table(tax_table_elem)
+        self._add_tax_table(tax_table_elem, tax_codes)
         
         # UOMTable (required) - Add minimal unit of measure table
         uom_table_elem = self._elem(master_elem, "UOMTable")
@@ -372,23 +372,34 @@ class SAFTGenerator:
             if line.get('description'):
                 self._elem(line_elem, "Description", line['description'])
     
-    def _add_tax_table(self, parent: ET.Element):
-        """Add TaxTable with Bulgarian VAT rates"""
-        # Add standard Bulgarian VAT rates
-        tax_entry = self._elem(parent, "TaxTableEntry")
-        self._elem(tax_entry, "TaxType", "VAT")
-        self._elem(tax_entry, "TaxCode", "STD")
-        self._elem(tax_entry, "TaxPercentage", "20.00")
-        self._elem(tax_entry, "Description", "Standard VAT Rate")
+    def _add_tax_table(self, parent: ET.Element, tax_codes: list):
+        """Add TaxTable with tax codes from Salesforce"""
         
-        logger.debug("Added tax table")
+        if not tax_codes:
+            # Fallback to standard Bulgarian VAT if no tax codes found
+            tax_entry = self._elem(parent, "TaxTableEntry")
+            self._elem(tax_entry, "TaxType", "ДДС")
+            self._elem(tax_entry, "TaxCode", "STD")
+            self._elem(tax_entry, "TaxPercentage", "20.00")
+            self._elem(tax_entry, "Description", "Стандартна ставка на ДДС")
+            logger.debug("Added default tax table entry")
+        else:
+            for tax_code in tax_codes:
+                tax_entry = self._elem(parent, "TaxTableEntry")
+                self._elem(tax_entry, "TaxType", tax_code.get('tax_type', 'ДДС'))
+                self._elem(tax_entry, "TaxCode", tax_code.get('tax_code', 'STD'))
+                self._elem(tax_entry, "TaxPercentage", f"{tax_code.get('tax_percentage', 0):.2f}")
+                if tax_code.get('description'):
+                    self._elem(tax_entry, "Description", tax_code['description'])
+            
+            logger.debug(f"Added {len(tax_codes)} tax table entries")
     
     def _add_uom_table(self, parent: ET.Element):
         """Add UOMTable with basic units of measure"""
         # Add basic unit of measure
         uom_entry = self._elem(parent, "UOMTableEntry")
-        self._elem(uom_entry, "UnitOfMeasure", "UNIT")
-        self._elem(uom_entry, "Description", "Unit")
+        self._elem(uom_entry, "UnitOfMeasure", "HUR")
+        self._elem(uom_entry, "Description", "Часове")
         
         logger.debug("Added UOM table")
     

@@ -49,3 +49,7 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# CSV and XLSX
+*.CSV
+*.XLSX
