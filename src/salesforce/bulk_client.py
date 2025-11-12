@@ -257,7 +257,7 @@ class SalesforceBulkClient:
         # Build query with optional company filter
         company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id else ""
         transaction_line_query = f"""
-            SELECT Id, c2g__GeneralLedgerAccount__c, c2g__LineType__c, c2g__HomeValue__c,
+            SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
                 c2g__HomeCredits__c, c2g__HomeDebits__c,
                 c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name
             FROM c2g__codaTransactionLineItem__c
@@ -320,9 +320,11 @@ class SalesforceBulkClient:
         logger.info("Extracting Accounts...")
         account_query = f"""
             SELECT Id, Name, AccountNumber, Type, BillingStreet, 
-                   BillingCity, BillingPostalCode, BillingCountry, Phone
+                   BillingCity, BillingPostalCode, BillingCountry, Phone,
+                   c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
+                   c2g__CODAInvoiceEmail__c
             FROM {objects_config['account']}
-            WHERE (Type = 'Customer' OR Type = 'Supplier')
+            WHERE (Type != 'Prospect' AND Type != 'Scaleup' AND Type != '')
         """
         data['accounts'] = self.query(account_query)
         
