@@ -186,9 +186,9 @@ class SAFTGenerator:
         uom_table_elem = self._elem(master_elem, "UOMTable")
         self._add_uom_table(uom_table_elem)
         
-        # Products (required) - Add minimal product entry
+        # Products (required) - Add products from Salesforce
         products_elem = self._elem(master_elem, "Products")
-        self._add_products(products_elem)
+        self._add_products(products_elem, master_files.get('products', []))
         
         logger.debug("MasterFilesMonthly section added")
     
@@ -403,15 +403,29 @@ class SAFTGenerator:
         
         logger.debug("Added UOM table")
     
-    def _add_products(self, parent: ET.Element):
-        """Add minimal Products section"""
-        # Add minimal product entry (required by schema)
-        product = self._elem(parent, "Product")
-        self._elem(product, "ProductCode", "SERVICES")
-        self._elem(product, "ProductDescription", "Professional Services")
-        self._elem(product, "ProductNumberCode", "SERVICES")
+    def _add_products(self, parent: ET.Element, products: list):
+        """Add Products section from Salesforce Product2 records"""
+        for prod in products:
+            product = self._elem(parent, "Product")
+            self._elem(product, "ProductCode", prod['product_code'])
+            self._elem(product, "GoodsServicesID", prod['goods_services_id'])
+            
+            if prod.get('product_group'):
+                self._elem(product, "ProductGroup", prod['product_group'])
+            
+            self._elem(product, "Description", prod['description'])
+            self._elem(product, "ProductCommodityCode", prod['product_commodity_code'])
+            self._elem(product, "ProductNumberCode", prod['product_number_code'])
+            self._elem(product, "UOMBase", prod['uom_base'])
+            self._elem(product, "UOMStandard", prod['uom_standard'])
+            self._elem(product, "UOMToUOMBaseConversionFactor", prod['uom_conversion_factor'])
+            
+            # Tax information
+            tax_elem = self._elem(product, "Tax")
+            self._elem(tax_elem, "TaxType", prod['tax_type'])
+            self._elem(tax_elem, "TaxCode", prod['tax_code'])
         
-        logger.debug("Added products")
+        logger.debug(f"Added {len(products)} products")
     
     def _add_source_documents_monthly(self, root: ET.Element, source_docs: Dict):
         """Add SourceDocumentsMonthly section (required for monthly reports)"""
