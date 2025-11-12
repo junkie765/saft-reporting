@@ -114,8 +114,14 @@ class CertiniaTransformer:
                 data.get('transaction_lines', []),
                 period_start_name
             ),
-            'customers': self._transform_customers(data.get('accounts', [])),
-            'suppliers': self._transform_suppliers(data.get('accounts', []))
+            'customers': self._transform_customers(
+                data.get('accounts', []),
+                data.get('transaction_lines', [])
+            ),
+            'suppliers': self._transform_suppliers(
+                data.get('accounts', []),
+                data.get('transaction_lines', [])
+            )
         }
     
     def _transform_gl_accounts(self, gl_accounts: List[Dict], transaction_lines: List[Dict], period_start_name: str) -> List[Dict]:
@@ -224,45 +230,177 @@ class CertiniaTransformer:
         logger.info(f"Transformed {len(transformed)} GL accounts with calculated balances")
         return transformed
     
-    def _transform_customers(self, accounts: List[Dict]) -> List[Dict]:
-        """Transform customer accounts"""
-        transformed = [
-            {
+    def _calculate_account_balances(self, transaction_lines: List[Dict]) -> Dict[str, Dict]:
+        """Calculate opening and closing balances for customer/supplier accounts"""
+        period_start_date = self.config['saft']['selection_start_date']
+        start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
+        previous_period_end = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        def get_transaction_date(line: Dict) -> str:
+            """Extract transaction date from nested structure"""
+            if 'c2g__Transaction__r' in line and isinstance(line['c2g__Transaction__r'], dict):
+                return line['c2g__Transaction__r'].get('c2g__TransactionDate__c', '')
+            return line.get('c2g__Transaction__r.c2g__TransactionDate__c', '')
+        
+        # Build balances by account ID using NET VALUE approach
+        opening_balances = {}  # Net balance through end of PREVIOUS period
+        closing_balances = {}  # Net balance through end of CURRENT period
+        
+        for line in transaction_lines:
+            account_id = line.get('c2g__Account__c')
+            if not account_id:
+                continue
+            
+            # Use c2g__HomeValue__c if available (signed net value), otherwise calculate
+            home_value = line.get('c2g__HomeValue__c')
+            if home_value is not None:
+                net_value = self._parse_decimal(home_value)
+            else:
+                debit = self._parse_decimal(line.get('c2g__HomeDebits__c', 0))
+                credit = self._parse_decimal(line.get('c2g__HomeCredits__c', 0))
+                net_value = debit - credit
+            
+            transaction_date = get_transaction_date(line)
+            
+            # Accumulate closing net balance (all transactions through end of CURRENT period)
+            closing_balances.setdefault(account_id, 0.0)
+            closing_balances[account_id] += net_value
+            
+            # Accumulate opening net balance (all transactions through end of PREVIOUS period)
+            if transaction_date and transaction_date <= previous_period_end:
+                opening_balances.setdefault(account_id, 0.0)
+                opening_balances[account_id] += net_value
+        
+        # Convert net balances to debit/credit format for each account
+        account_balances = {}
+        all_account_ids = set(opening_balances.keys()) | set(closing_balances.keys())
+        
+        for account_id in all_account_ids:
+            opening_net = opening_balances.get(account_id, 0.0)
+            closing_net = closing_balances.get(account_id, 0.0)
+            
+            # Determine the side based on closing balance (same-side rule)
+            # For customers: typically debit (receivables)
+            # For suppliers: typically credit (payables)
+            if closing_net > 0:
+                # Closing is debit, so opening must also be debit
+                closing_debit = closing_net
+                closing_credit = 0.0
+                opening_debit = abs(opening_net)
+                opening_credit = 0.0
+            elif closing_net < 0:
+                # Closing is credit, so opening must also be credit
+                closing_debit = 0.0
+                closing_credit = abs(closing_net)
+                opening_debit = 0.0
+                opening_credit = abs(opening_net)
+            else:
+                # Closing is zero
+                if opening_net > 0:
+                    opening_debit = opening_net
+                    opening_credit = 0.0
+                    closing_debit = 0.0
+                    closing_credit = 0.0
+                elif opening_net < 0:
+                    opening_debit = 0.0
+                    opening_credit = abs(opening_net)
+                    closing_debit = 0.0
+                    closing_credit = 0.0
+                else:
+                    opening_debit = 0.0
+                    opening_credit = 0.0
+                    closing_debit = 0.0
+                    closing_credit = 0.0
+            
+            account_balances[account_id] = {
+                'opening_debit_balance': opening_debit,
+                'opening_credit_balance': opening_credit,
+                'closing_debit_balance': closing_debit,
+                'closing_credit_balance': closing_credit
+            }
+        
+        logger.info(f"Calculated balances for {len(account_balances)} accounts from transaction lines")
+        return account_balances
+    
+    def _transform_customers(self, accounts: List[Dict], transaction_lines: List[Dict]) -> List[Dict]:
+        """Transform customer accounts with calculated balances"""
+        # Calculate balances for each account
+        account_balances = self._calculate_account_balances(transaction_lines)
+        
+        transformed = []
+        for acc in accounts:
+            if acc.get('Type') == 'Subco' or acc.get('Type') == 'Partner':
+                continue
+                
+            account_id = acc.get('Id')
+            balances = account_balances.get(account_id, {
+                'opening_debit_balance': 0.0,
+                'opening_credit_balance': 0.0,
+                'closing_debit_balance': 0.0,
+                'closing_credit_balance': 0.0
+            })
+            
+            transformed.append({
                 'customer_id': acc.get('AccountNumber', acc.get('Id')),
                 'account_id': acc.get('AccountNumber', ''),
-                'customer_tax_id': acc.get('c2g__CODATaxRegistrationNumber__c', ''),
+                'customer_tax_id': acc.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
                 'company_name': acc.get('Name', ''),
-                'contact': {'telephone': acc.get('Phone', '')},
+                'contact': {
+                    'telephone': acc.get('Phone', ''),
+                    'fax': acc.get('Fax', ''),
+                    'email': acc.get('c2g__CODAInvoiceEmail__c', ''),
+                    'website': acc.get('Website', '')
+                },
                 'billing_address': {
                     'street_name': acc.get('BillingStreet', ''),
                     'city': acc.get('BillingCity', ''),
                     'postal_code': acc.get('BillingPostalCode', ''),
                     'country': acc.get('BillingCountry', 'BG')
-                }
-            }
-            for acc in accounts if acc.get('Type') == 'Customer'
-        ]
+                },
+                **balances
+            })
+        
         logger.info(f"Transformed {len(transformed)} customers")
         return transformed
     
-    def _transform_suppliers(self, accounts: List[Dict]) -> List[Dict]:
-        """Transform supplier accounts"""
-        transformed = [
-            {
+    def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict]) -> List[Dict]:
+        """Transform supplier accounts with calculated balances"""
+        # Calculate balances for each account
+        account_balances = self._calculate_account_balances(transaction_lines)
+        
+        transformed = []
+        for acc in accounts:
+            if acc.get('Type') != 'Subco' and acc.get('Type') != 'Partner':
+                continue
+                
+            account_id = acc.get('Id')
+            balances = account_balances.get(account_id, {
+                'opening_debit_balance': 0.0,
+                'opening_credit_balance': 0.0,
+                'closing_debit_balance': 0.0,
+                'closing_credit_balance': 0.0
+            })
+            
+            transformed.append({
                 'supplier_id': acc.get('AccountNumber', acc.get('Id')),
                 'account_id': acc.get('AccountNumber', ''),
-                'supplier_tax_id': acc.get('c2g__CODATaxRegistrationNumber__c', ''),
+                'supplier_tax_id': acc.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
                 'company_name': acc.get('Name', ''),
-                'contact': {'telephone': acc.get('Phone', '')},
+                'contact': {
+                    'telephone': acc.get('Phone', ''),
+                    'fax': acc.get('Fax', ''),
+                    'email': acc.get('c2g__CODAInvoiceEmail__c', ''),
+                    'website': acc.get('Website', '')
+                },
                 'billing_address': {
                     'street_name': acc.get('BillingStreet', ''),
                     'city': acc.get('BillingCity', ''),
                     'postal_code': acc.get('BillingPostalCode', ''),
                     'country': acc.get('BillingCountry', 'BG')
-                }
-            }
-            for acc in accounts if acc.get('Type') == 'Supplier'
-        ]
+                },
+                **balances
+            })
+        
         logger.info(f"Transformed {len(transformed)} suppliers")
         return transformed
     
