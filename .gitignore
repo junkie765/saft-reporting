@@ -53,3 +53,4 @@ Thumbs.db
 # CSV and XLSX
 *.CSV
 *.XLSX
+*.XSD
