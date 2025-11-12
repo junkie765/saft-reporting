@@ -122,7 +122,8 @@ class CertiniaTransformer:
             'suppliers': self._transform_suppliers(
                 data.get('accounts', []),
                 data.get('transaction_lines', [])
-            )
+            ),
+            'products': self._transform_products(data.get('products', []))
         }
     
     def _transform_gl_accounts(self, gl_accounts: List[Dict], transaction_lines: List[Dict], period_start_name: str) -> List[Dict]:
@@ -496,6 +497,28 @@ class CertiniaTransformer:
             })
         
         logger.info(f"Transformed {len(transformed)} tax codes")
+        return transformed
+    
+    def _transform_products(self, products: List[Dict]) -> List[Dict]:
+        """Transform Salesforce Product2 records to SAF-T products"""
+        transformed = []
+        
+        for product in products:
+            transformed.append({
+                'product_code': product.get('ProductCode', ''),
+                'goods_services_id': '01',  # 01 = Goods, 02 = Services
+                'product_group': product.get('Family', ''),
+                'description': product.get('Name', ''),
+                'product_commodity_code': '0',  # Always 0 as specified
+                'product_number_code': product.get('ProductCode', ''),
+                'uom_base': 'HUR',
+                'uom_standard': 'ЧАС',
+                'uom_conversion_factor': '1',
+                'tax_type': '100',
+                'tax_code': '100211'
+            })
+        
+        logger.info(f"Transformed {len(transformed)} products")
         return transformed
     
     def _parse_decimal(self, value: Any) -> float:

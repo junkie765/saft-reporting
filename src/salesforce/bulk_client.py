@@ -361,6 +361,15 @@ class SalesforceBulkClient:
         """
         data['accounts'] = self.query(account_query)
         
+        # Extract Products (Product2)
+        logger.info("Extracting Products...")
+        product_query = """
+            SELECT Id, ProductCode, Name, Description, Family
+            FROM Product2
+            WHERE IsActive = true
+        """
+        data['products'] = self.query(product_query)
+        
         # Extract Tax Codes with Rates via REST API (supports subqueries)
         logger.info("Extracting Tax Codes and Rates via REST API...")
         tax_code_query = f"""
