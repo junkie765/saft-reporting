@@ -169,6 +169,39 @@ class SalesforceBulkClient:
         self.wait_for_job_completion(job_id, polling_interval, timeout)
         return self.get_job_results(job_id)
     
+    def query_rest(self, soql_query: str) -> List[Dict[str, Any]]:
+        """
+        Execute SOQL query using REST API (supports subqueries)
+        
+        Args:
+            soql_query: SOQL query string
+            
+        Returns:
+            List of records
+        """
+        import urllib.parse
+        
+        url = f"{self.base_url}/query"
+        params = {'q': soql_query}
+        
+        all_records = []
+        
+        while url:
+            response = requests.get(url, params=params if params else None, headers=self.headers)
+            response.raise_for_status()
+            
+            result = response.json()
+            all_records.extend(result.get('records', []))
+            
+            # Handle pagination
+            url = result.get('nextRecordsUrl')
+            if url:
+                url = f"{self.instance_url}{url}"
+                params = None  # params are in the nextRecordsUrl
+        
+        logger.info(f"Retrieved {len(all_records)} records via REST API")
+        return all_records
+    
     def extract_certinia_data(self, start_date: datetime, end_date: datetime, company_filter: str | None = None) -> Dict[str, List]:
         """
         Extract all necessary Certinia data for SAF-T reporting
@@ -327,6 +360,19 @@ class SalesforceBulkClient:
             WHERE (Type != 'Prospect' AND Type != 'Scaleup' AND Type != '')
         """
         data['accounts'] = self.query(account_query)
+        
+        # Extract Tax Codes with Rates via REST API (supports subqueries)
+        logger.info("Extracting Tax Codes and Rates via REST API...")
+        tax_code_query = f"""
+            SELECT Id, Name, c2g__Description__c,
+                   (SELECT c2g__Rate__c, c2g__StartDate__c 
+                    FROM c2g__TaxRates__r 
+                    WHERE c2g__StartDate__c <= {end_date.strftime('%Y-%m-%d')}
+                    ORDER BY c2g__StartDate__c DESC
+                    LIMIT 1)
+            FROM c2g__codaTaxCode__c
+        """
+        data['tax_codes'] = self.query_rest(tax_code_query)
         
         # Extract Company Information (if not already extracted by filter)
         if 'company' not in data:

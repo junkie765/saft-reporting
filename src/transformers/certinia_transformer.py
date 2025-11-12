@@ -35,7 +35,8 @@ class CertiniaTransformer:
             'header': self._transform_header(certinia_data),
             'master_files': self._transform_master_files(certinia_data),
             'general_ledger_entries': self._transform_gl_entries(certinia_data),
-            'source_documents': self._transform_source_documents(certinia_data)
+            'source_documents': self._transform_source_documents(certinia_data),
+            'tax_codes': self._transform_tax_codes(certinia_data)
         }
         
         logger.info("SAF-T transformation complete")
@@ -470,6 +471,32 @@ class CertiniaTransformer:
             'purchase_invoices': [],
             'payments': []
         }
+    
+    def _transform_tax_codes(self, data: Dict) -> List[Dict]:
+        """Transform Salesforce tax codes to SAF-T tax table entries"""
+        tax_codes = data.get('tax_codes', [])
+        
+        transformed = []
+        for tax_code in tax_codes:
+            # Get the most recent tax rate from the nested relationship
+            tax_rates_obj = tax_code.get('c2g__TaxRates__r')
+            tax_rate = 0.0
+            
+            if tax_rates_obj and isinstance(tax_rates_obj, dict):
+                tax_rates = tax_rates_obj.get('records', [])
+                if tax_rates:
+                    # Get the rate from the first (most recent) record (0.20 -> 20.00)
+                    tax_rate = self._parse_decimal(tax_rates[0].get('c2g__Rate__c', 0))
+            
+            transformed.append({
+                'tax_type': 'ДДС',  # VAT in Bulgarian
+                'tax_code': tax_code.get('Name', 'STD'),
+                'description': tax_code.get('c2g__Description__c', ''),
+                'tax_percentage': tax_rate
+            })
+        
+        logger.info(f"Transformed {len(transformed)} tax codes")
+        return transformed
     
     def _parse_decimal(self, value: Any) -> float:
         """Parse decimal value safely"""
