@@ -1,0 +1,156 @@
+Object;;Accounting Company;;;;;;;;;;
+API Name;;c2g__codaCompany__c;;;;;;;;;;
+;;;;;;;;;;;;
+NO;Field Label;API Name;Data Type;Length;Field Type;Required;Picklist Values;Formula;Extend ID;Track History;Description;Help Text
+1;Record ID;Id;id;;Standard;Required;;;;;;
+2;Owner ID;OwnerId;Lookup (Group,User);;Standard;Required;;;;;;
+3;Deleted;IsDeleted;Checkbox;;Standard;;;;;;;
+4;Name;Name;Text;80;Standard;;;;;;;
+5;Currency ISO Code;CurrencyIsoCode;Picklist;;Standard;;"GBP;BGN;CAD;CZK;DKK;EUR;HUF;MKD;QAR;RON;CHF;TRY;USD";;;;;
+6;Record Type ID;RecordTypeId;Lookup (Record Type);;Standard;;;;;;;
+7;Created Date;CreatedDate;Date/Time;;Standard;Required;;;;;;
+8;Created By ID;CreatedById;Lookup (User);;Standard;Required;;;;;;
+9;Last Modified Date;LastModifiedDate;Date/Time;;Standard;Required;;;;;;
+10;Last Modified By ID;LastModifiedById;Lookup (User);;Standard;Required;;;;;;
+11;System Modstamp;SystemModstamp;Date/Time;;Standard;Required;;;;;;
+12;Last Viewed Date;LastViewedDate;Date/Time;;Standard;;;;;;;
+13;Last Referenced Date;LastReferencedDate;Date/Time;;Standard;;;;;;;
+14;Validated;c2g__AddressIsValid__c;Formula (Checkbox);;Custom;;;"NOT
+( ISBLANK(c2g__ShortStreet__c) &&
+  ISBLANK(c2g__City__c) &&
+  ISBLANK(c2g__StateProvince__c) &&
+  ISBLANK(c2g__ZipPostCode__c) &&
+  ISBLANK(c2g__Country__c)
+) &&
+( c2g__ShortStreet__c  =  c2g__ValidatedStreet__c ) &&
+( c2g__City__c =  c2g__ValidatedCity__c ) &&
+( c2g__StateProvince__c =  c2g__ValidatedStateProvince__c ) &&
+( c2g__ZipPostCode__c =  c2g__ValidatedZipPostalCode__c ) &&
+( c2g__Country__c =  c2g__ValidatedCountry__c )";;;;
+15;Apex Job Id;c2g__ApexJobId__c;Text;18;Custom;;;;?;;Unique identifier for the current batch Apex job.;
+16;Avalara VAT Reporting Start Date;c2g__AvalaraVATReportingStartDate__c;Date;;Custom;;;;;;Date when this company started sending transaction data to Avalara VAT Reporting using the integration. Any transactions that occurred before this date were not automatically sent to Avalara VAT Reporting.;Date when this company started sending transaction data to Avalara VAT Reporting using the integration. Any transactions that occurred before this date were not automatically sent to Avalara VAT Reporting.
+17;Bank Account;c2g__BankAccount__c;Lookup (Bank Account);;Custom;;;;;;;
+18;Batch Process;c2g__BatchProcess__c;Lookup (FFA Batch Process);;Custom;;;;;;Lookup to the batch process record. The record is deleted automatically when the process completes.;
+19;Base Date 1;c2g__CODABaseDate1__c;Picklist;;Custom;;"End of Next Month;Invoice Date;Start of Next Month";;;;The date on which terms will be calculated.;
+20;Base Date 2;c2g__CODABaseDate2__c;Picklist;;Custom;;"End of Next Month;Invoice Date;Start of Next Month";;;;The date on which terms will be calculated.;
+21;Base Date 3;c2g__CODABaseDate3__c;Picklist;;Custom;;"End of Next Month;Invoice Date;Start of Next Month";;;;The date on which terms will be calculated.;
+22;Base Date 4;c2g__CODABaseDate4__c;Picklist;;Custom;;"End of Next Month;Invoice Date;Start of Next Month";;;;The date on which terms will be calculated.;
+23;Days Offset 1;c2g__CODADaysOffset1__c;Number (18, 0);18;Custom;;;;;;The number of days to add to the base date;
+24;Days Offset 2;c2g__CODADaysOffset2__c;Number (18, 0);18;Custom;;;;;;The number of days to add to the base date;
+25;Days Offset 3;c2g__CODADaysOffset3__c;Number (18, 0);18;Custom;;;;;;The number of days to add to the base date;
+26;Days Offset 4;c2g__CODADaysOffset4__c;Number (18, 0);18;Custom;;;;;;The number of days to add to the base date;
+27;Description 1;c2g__CODADescription1__c;Text;24;Custom;;;;;;The description of the settlement terms;
+28;Description 2;c2g__CODADescription2__c;Text;24;Custom;;;;;;The description of the settlement terms;
+29;Description 3;c2g__CODADescription3__c;Text;24;Custom;;;;;;The description of the settlement terms;
+30;Description 4;c2g__CODADescription4__c;Text;24;Custom;;;;;;The description of the settlement terms;
+31;Discount 1;c2g__CODADiscount1__c;Number (3, 2);5;Custom;;;;;;The amount of discount to be applied;
+32;Discount 2;c2g__CODADiscount2__c;Number (3, 2);5;Custom;;;;;;The amount of discount to be applied;
+33;Discount 3;c2g__CODADiscount3__c;Number (3, 2);5;Custom;;;;;;The amount of discount to be applied;
+34;Discount 4;c2g__CODADiscount4__c;Number (3, 2);5;Custom;;;;;;The amount of discount to be applied;
+35;Matching Currency Mode;c2g__CashMatchingCurrencyMode__c;Picklist;;Custom;;"Account;Document";;;;Specifies the default value of the Currency Mode field for matching.;
+36;City;c2g__City__c;Text;40;Custom;;;;;;The city;
+37;Contact Email;c2g__ContactEmail__c;Email;;Custom;;;;;;The contact email;
+38;Country;c2g__Country__c;Text;40;Custom;;;;;;The country;
+39;Currency Write-Off Dimension 1;c2g__CustomerCurrencyWriteOffDimension1__c;Lookup (Dimension 1);;Custom;;;;;;Customer Currency Write-Off Dimension 1;
+40;Currency Write-Off Dimension 2;c2g__CustomerCurrencyWriteOffDimension2__c;Lookup (Dimension 2);;Custom;;;;;;Customer Currency Write-Off Dimension 2;
+41;Currency Write-Off Dimension 3;c2g__CustomerCurrencyWriteOffDimension3__c;Lookup (Dimension 3);;Custom;;;;;;Customer Currency Write-Off Dimension 3;
+42;Currency Write-Off Dimension 4;c2g__CustomerCurrencyWriteOffDimension4__c;Lookup (Dimension 4);;Custom;;;;;;Customer Currency Write-Off Dimension 4;
+43;Currency Write-Off GLA;c2g__CustomerCurrencyWriteOff__c;Lookup (General Ledger Account);;Custom;;;;;;;
+44;Settlement Discount Dimension 1;c2g__CustomerSettlementDiscountDimension1__c;Lookup (Dimension 1);;Custom;;;;;;Customer Settlement Discount Dimension 1;
+45;Settlement Discount Dimension 2;c2g__CustomerSettlementDiscountDimension2__c;Lookup (Dimension 2);;Custom;;;;;;Customer Settlement Discount Dimension 2;
+46;Settlement Discount Dimension 3;c2g__CustomerSettlementDiscountDimension3__c;Lookup (Dimension 3);;Custom;;;;;;Customer Settlement Discount Dimension 3;
+47;Settlement Discount Dimension 4;c2g__CustomerSettlementDiscountDimension4__c;Lookup (Dimension 4);;Custom;;;;;;Customer Settlement Discount Dimension4;
+48;Settlement Discount;c2g__CustomerSettlementDiscount__c;Lookup (General Ledger Account);;Custom;;;;;;;
+49;Write-off Dimension 1;c2g__CustomerWriteOffDimension1__c;Lookup (Dimension 1);;Custom;;;;;;Customer Write-Off Dimension1;
+50;Write-off Dimension 2;c2g__CustomerWriteOffDimension2__c;Lookup (Dimension 2);;Custom;;;;;;Customer Write-off Dimension 2;
+51;Write-off Dimension 3;c2g__CustomerWriteOffDimension3__c;Lookup (Dimension 3);;Custom;;;;;;Customer Write-off Dimension 3;
+52;Write-off Dimension 4;c2g__CustomerWriteOffDimension4__c;Lookup (Dimension 4);;Custom;;;;;;Customer WriteOff Dimension4;
+53;Write-off;c2g__CustomerWriteOff__c;Lookup (General Ledger Account);;Custom;;;;;;;
+54;Disable Opportunity Recurring Invoices;c2g__DisableRecurringInvoices__c;Checkbox;;Custom;;;;;;;
+55;Tax Country Code;c2g__ECCountryCode__c;Picklist;;Custom;;"AE;AT;AU;BE;BG;CA;CH;CY;CZ;DE;DK;EE;EL;ES;FI;FR;GB;GR;HK;HU;IE;IT;LT;LU;LV;MT;MY;NL;NO;NZ;PL;PT;RO;SE;SG;SI;SK;US;ZA";;;;;
+56;Elimination Company;c2g__EliminationCompany__c;Checkbox;;Custom;;;;;;;
+57;Enable Place of Supply Rules;c2g__EnablePlaceOfSupplyRules__c;Checkbox;;Custom;;;;;;;
+58;Exchange Rate Group;c2g__ExchangeRateGroup__c;Lookup (Exchange Rate Group);;Custom;;;;;;A lookup to the Foundations Exchange Rate Group.;
+59;External Id;c2g__ExternalId__c;Text;32;Custom;;;;?;;;
+60;External Tax Calculation;c2g__ExternalTaxCalculation__c;Picklist;;Custom;;"Disabled;Enabled";;;;;
+61;Fax;c2g__Fax__c;Phone;40;Custom;;;;;;The fax;
+62;Financial Year Start Date;c2g__FinancialYearStartDate__c;Date;;Custom;;;;;;Hidden field to record the start date of the financial year used in the Flexible Decimal Places feature.;Hidden field to record the start date of the financial year used in the Flexible Decimal Places feature.
+63;Flexible Decimal Places - FY Start Date;c2g__FlexibleDecimalPlacesStart__c;Date;;Custom;;;;;;Hidden field to record the start date of the financial year used in the Flexible Decimal Places feature.;Hidden field to record the start date of the financial year used in the Flexible Decimal Places feature.
+64;Intercompany Account;c2g__IntercompanyAccount__c;Lookup (Account);;Custom;;;;;?;;
+65;Local Chart of Accounts Structure;c2g__LocalChartOfAccountsStructure__c;Lookup (Chart of Accounts Structure);;Custom;;;;;;;
+66;Localization;c2g__Localization__c;Picklist;;Custom;;"AT;AU;BE;BG;CH;DE;DK;ES;FI;FR;IT;LU;NL;NO;SE";;;;Stores the ISO country code of the localization.;
+67;Logo;c2g__LogoImage__c;Formula (Text);1300;Custom;;;"IF(LEN(c2g__LogoURL__c)=0,"""", IMAGE(c2g__LogoURL__c,""Company Logo""))";;;;
+68;Logo URL;c2g__LogoURL__c;Text;255;Custom;;;;;;;
+69;Org-Wide Effective Date;c2g__OrgWideEffectiveDate__c;Date;;Custom;;;;;;;
+70;Phone;c2g__Phone__c;Phone;40;Custom;;;;;;The phone;
+71;Retained Earnings GLA;c2g__RetainedEarningsGLA__c;Lookup (General Ledger Account);;Custom;;;;;;;
+72;External Tax Company Code;c2g__SalesTaxCompanyCode__c;Text;50;Custom;;;;;;The code identifies the company in external tax calculation and reporting systems;The code identifies the company in external tax calculation and reporting systems
+73;Short Street;c2g__ShortStreet__c;Text Area;255;Custom;;;;;;;
+74;State/Province;c2g__StateProvince__c;Text;20;Custom;;;;;;;
+75;Status;c2g__Status__c;Picklist;;Custom;;"Processing;Error;Complete";;;;"The current status of the batch job: ""Processing"", ""Complete"", ""Error"".";
+76;Street;c2g__Street__c;Long Text Area;32000;Custom;;;;;;The street;
+77;Suspense GLA;c2g__SuspenseGLA__c;Lookup (General Ledger Account);;Custom;;;;;;;
+78;Tax Code;c2g__TaxCode__c;Lookup (Accounting Tax Code);;Custom;;;;;;;
+79;Tax Identification Number;c2g__TaxIdentificationNumber__c;Text;20;Custom;;;;;;;
+80;Unit of Work;c2g__UnitOfWork__c;Number (18, 0);18;Custom;;;;;;;
+81;Use Org-Wide Exchange Rates;c2g__UseOrgWideExchangeRates__c;Checkbox;;Custom;;;;;;;
+82;Tax Registration Number;c2g__VATRegistrationNumber__c;Text;255;Custom;;;;;;Identifying number used for tax purposes.;
+83;VAT/GST Group;c2g__VAT_GST_Group__c;Checkbox;;Custom;;;;;;;
+84;ValidatedCity;c2g__ValidatedCity__c;Text;40;Custom;;;;;;;
+85;Validated Country;c2g__ValidatedCountry__c;Text;40;Custom;;;;;;;
+86;Validated State/Province;c2g__ValidatedStateProvince__c;Text;20;Custom;;;;;;;
+87;ValidatedStreet;c2g__ValidatedStreet__c;Text Area;255;Custom;;;;;;;
+88;Validated Zip/Postal Code;c2g__ValidatedZipPostalCode__c;Text;20;Custom;;;;;;;
+89;Website;c2g__Website__c;URL;255;Custom;;;;;;The website;
+90;Year End Mode;c2g__YearEndMode__c;Picklist;;Custom;;"Full Accounting Code;GLA Only";;;;;
+91;Zip/Postal Code;c2g__ZipPostCode__c;Text;20;Custom;;;;;;The zip or postal code;
+92;Allocated Ownership;c2g__AllocatedOwnership__c;Roll-Up Summary;;Custom;;;;;;;
+93;By Order of Address Line 1;ffbf__ByOrderofAddressLine1__c;Text;35;Custom;;;;;;;
+94;By Order of Address Line 2;ffbf__ByOrderofAddressLine2__c;Text;35;Custom;;;;;;;
+95;By Order of Address Line 3;ffbf__ByOrderofAddressLine3__c;Text;35;Custom;;;;;;;
+96;Company Identification Number;ffbf__CompanyIdentificationNumber__c;Number (18, 0);18;Custom;;;;;;;
+97;Company Specification;ffbf__CompanySpecification__c;Text;80;Custom;;;;;;;
+98;Remittance;ffaci__CongaTemplateRemittance__c;Lookup (Conga Template);;Custom;;;;;;ID of Conga Template for Remittance;ID of Conga Template for Remittance
+99;Sales Credit Note;ffaci__CongaTemplateSalesCreditNote__c;Lookup (Conga Template);;Custom;;;;;;ID of Conga Template for Sales Credit Note;ID of Conga Template for Sales Credit Note
+100;Sales Invoice;ffaci__CongaTemplateSalesInvoice__c;Lookup (Conga Template);;Custom;;;;;;ID of Conga Template for Sales Invoice;ID of Conga Template for Sales Invoice
+101;Use Dimension 1;FFX_Use_Dimension_1__c;Checkbox;;Custom;;;;;;;
+102;Use Dimension 2;FFX_Use_Dimension_2__c;Checkbox;;Custom;;;;;;;
+103;Use Dimension 3;FFX_Use_Dimension_3__c;Checkbox;;Custom;;;;;;;
+104;Use Dimension 4;FFX_Use_Dimension_4__c;Checkbox;;Custom;;;;;;;
+105;Name (cyrillic);FF_Name_cyrillic__c;Text;80;Custom;;;;;;;Company name for Tax Return
+106;Address (Cyrillic);F_Address_Cyrillic__c;Text;255;Custom;;;;;;;Cyrillic address for VAT return.
+107;City (Cyrillic);F_City_Cyrillic__c;Text;30;Custom;;;;;;;Cyrillic City name for VAT return
+108;Input Tax Code;F_Input_Tax_Code__c;Lookup (Accounting Tax Code);;Custom;;;;;;;Tax code default on Accounts when creating suppliers
+109;Short Name;F_Short_Name__c;Text;6;Custom;;;;;;;Used with document sequencing
+110;VAT declaration PIN/Accountant DEKLAR;F_VAT_declaration_PIN__c;Text;50;Custom;;;;;;;For VAT return DEKLAR:  Person submitting the data (PIN/Name)
+111;VAT declaration Accountant VIES;VAT_declaration_Accountant_VIES__c;Text;150;Custom;;;;;;;Accountant name for VIES report
+112;Dual Currency;F_Dual_Currency__c;Lookup (Accounting Currency);;Custom;;;;;;;Used for RevRec F/X
+113;Home Currency;F_Home_Currency__c;Lookup (Accounting Currency);;Custom;;;;;;;Used in RevRec FX
+114;Company Identification Number;SFocus_Company_Identification_Number__c;Text;20;Custom;;;;;;;
+115;Allow Partial Payment when Matching;c2g__AllowPartialPaymentWhenMatching__c;Checkbox;;Custom;;;;;;Indicates that Allow Partial Payments is selected by default when matching.;Indicates that Allow Partial Payments is selected by default when matching. If left blank, defaults to False.
+116;Consolidation Adjustment Company;c2g__ConsolidationAdjustmentCompany__c;Checkbox;;Custom;;;;;;Indicates that this company is a Consolidation Adjustment Company.;
+117;E-Invoicing Legal Entity Identifier;c2g__EInvoicingLegalEntityID__c;Text;255;Custom;;;;;;Stores the ID generated by the external provider when registering a legal entity as a sender of e-invoices.;Used to identify this company as a sender by the external e-invoicing provider.
+118;E-Invoicing Tax Category;c2g__EInvoicingTaxCategory__c;Picklist;;Custom;;"standard;zero_rated;reverse_charge;intra_community;exempt;export;outside_scope;regulation33_exempt;nonregulation33_exempt;deemed_supply;srca_s;srca_c;not_registered;sales_tax;sales_tax_work;service_tax;service_tax_import;sales_to_export_market;sales_to_special_area;sales_to_designated_area;exemption_schedule_a;exemption_schedule_b;exemption_schedule_c_a;exemption_schedule_c_b;exemption_schedule_c_c;exemption_service_tax";;;;Stores the tax category code.;Stores the tax category as defined by Storecove.
+119;First Match By;c2g__FirstMatchBy__c;Picklist;;Custom;;"Customer Reference;Invoice Number;CustomField";;;;Specifes the default value of the First Match By field for matching.;Specifes the default value of the First Match By field for matching. If left blank, defaults to Customer Reference.
+120;Include In Background Matching Scheduler;c2g__IncludeInBackgroundMatchingScheduler__c;Checkbox;;Custom;;;;;;Allows company documents to be included in the Background Matching Scheduler.;Allows company documents to be included in the Background Matching Scheduler.
+121;Match Up To;c2g__MatchUpTo__c;Picklist;;Custom;;"Date;Period";;;;Specifies the default value of the Match Up To field for matching.;Specifies the default value of the Match Up To field for matching. If left blank, defaults to Date.
+122;Matching Date;c2g__MatchingDate__c;Picklist;;Custom;;"Cash Entry Date;Current Date";;;;Specifies the default value of the Matching Date field for matching.;Specifies the default value of the Matching Date field for matching. If left blank, defaults to Cash Entry Date. Cash Entry Date currently only applies to matching from the Cash Entry Page.
+123;Reporting Company;c2g__ReportingCompany__c;Lookup (Accounting Company);;Custom;;;;;;;
+124;Short Name;c2g__ShortName__c;Text;15;Custom;;;;;;Short name for the Accounting Company.;
+125;Then Match Remaining By;c2g__ThenMatchBy__c;Picklist;;Custom;;"Outstanding Value - Highest First;Outstanding Value - Lowest First;Date - Newest First;Date - Oldest First;Document Number - Newest First;Document Number - Oldest First";;;;Specifies the default value of the Then Match Remaining By field for matching.;Specifies the default value of the Then Match Remaining By field for matching. If left blank, defaults to Outstanding Value - Highest First. This field is only used if you add an additional matching condition.
+126;Currency Write-Off Loss GLA;c2g__CustomerCurrencyWriteOffLoss__c;Lookup (General Ledger Account);;Custom;;;;;;The currency exchange loss GLA. Required for some countries where currency gains and losses must be differentiated.;
+127;Use Currency Write-Off Loss GLA;c2g__UseCurrencyWriteOffLoss__c;Checkbox;;Custom;;;;;;Checkbox used to enable the Currency Write-Off Loss field to use a specific GLA when the currency exchange results in a loss. Default is deselected.;If selected, the Currency Write-Off Loss field uses a specific GLA when the currency exchange results in a loss.
+128;Unrealized Gains/Losses GLA;c2g__UnrealizedGainsLossesGLA__c;Lookup (General Ledger Account);;Custom;;;;;;The GLA that the unrealized gains and losses are posted to. However, if for the accounting company you select the Use Unrealized Losses GLA checkbox, only use this field for the unrealized gains.;The GLA that the unrealized gains and losses are posted to. However, if for the accounting company you select the Use Unrealized Losses GLA checkbox, only use this field for the unrealized gains.
+129;Unrealized Losses GLA;c2g__UnrealizedLossesGLA__c;Lookup (General Ledger Account);;Custom;;;;;;The GLA that the unrealized losses are posted to.;The GLA that the unrealized losses are posted to.
+130;Use Unrealized Losses GLA;c2g__UseUnrealizedLosses__c;Checkbox;;Custom;;;;;;;If selected, you can choose a GLA in the Unrealized Losses GLA field to which unrealized currency losses are posted.
+131;Acquisition Journal Summarization;FAM__Acquisition_Journal_Summarization__c;Picklist;;Custom;;"Asset Group GLAs;Asset Sub-Group GLAs;GLA Configuration";;;;The method of summarizing the company's acquisition journals.;The method of summarizing this company's acquisition journals.
+132;Depreciation Journal Summarization;FAM__Depreciation_Journal_Summarization__c;Picklist;;Custom;;"Asset Group GLAs;Asset Sub-Group GLAs;GLA Configuration";;;;The method of summarizing the company's depreciation journals.;The method of summarizing this company's depreciation journals.
+133;Disposal Journal Summarization;FAM__Disposal_Journal_Summarization__c;Picklist;;Custom;;"Asset Group GLAs;Asset Sub-Group GLAs;GLA Configuration";;;;The method of summarizing the company's disposal journals.;The method of summarizing this company's disposal journals.
+134;Auxiliary Dimension 1;c2g__AuxiliaryDimension1__c;Lookup (Dimension 1);;Custom;;;;;;The analysis dimension 1 related to the auxiliary GLA.;
+135;Auxiliary Dimension 2;c2g__AuxiliaryDimension2__c;Lookup (Dimension 2);;Custom;;;;;;The analysis dimension 2 related to the auxiliary GLA.;
+136;Auxiliary Dimension 3;c2g__AuxiliaryDimension3__c;Lookup (Dimension 3);;Custom;;;;;;The analysis dimension 3 related to the auxiliary GLA.;
+137;Auxiliary Dimension 4;c2g__AuxiliaryDimension4__c;Lookup (Dimension 4);;Custom;;;;;;The analysis dimension 4 related to the auxiliary GLA.;
+138;Auxiliary GLA;c2g__AuxiliaryGLA__c;Lookup (General Ledger Account);;Custom;;;;;;The default GLA used when performing cash matching to a specific GLA.;The general ledger account used when performing cash matching to a specific GLA. An auxiliary GLA can also be specified when committing a match.
+139;Custom First Match By;c2g__CustomFirstMatchBy__c;Text;80;Custom;;;;;;Sales Invoice field api name;Enter the API name of the sales invoice field here. If you use this field, only cash receipts to sales invoices will be matched in scheduled background matching.
+140;Unit of Measure;Unit_of_Measure__c;Text;10;Custom;;;;;;;
+141;UoM Description;UoM_Description__c;Text;10;Custom;;;;;;;

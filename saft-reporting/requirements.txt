@@ -1,0 +1,21 @@
+# Salesforce API
+simple-salesforce==1.12.6
+requests==2.31.0
+
+# XML Processing
+lxml==5.1.0
+
+# Data Processing
+pandas==2.2.0
+
+# Configuration
+python-dotenv==1.0.1
+
+# Logging
+colorlog==6.8.2
+
+# Date handling
+python-dateutil==2.8.2
+
+# Utilities
+pyyaml==6.0.1
