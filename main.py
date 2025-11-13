@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from src.salesforce.bulk_client import SalesforceBulkClient
+from src.salesforce.rest_client import SalesforceRestClient
 from src.salesforce.auth import SalesforceAuth
 from src.transformers.certinia_transformer import CertiniaTransformer
 from src.saft.saft_generator import SAFTGenerator
@@ -124,17 +124,17 @@ def main():
         sf_session = auth.authenticate()
         logger.info("✓ Authentication successful")
         
-        # Step 2: Initialize Bulk API client
-        logger.info("Step 2: Initializing Bulk API 2.0 client...")
-        bulk_client = SalesforceBulkClient(sf_session, config)
-        logger.info("✓ Bulk API client ready")
+        # Step 2: Initialize REST API client
+        logger.info("Step 2: Initializing REST API client...")
+        rest_client = SalesforceRestClient(sf_session, config)
+        logger.info("✓ REST API client ready")
         
         # Step 3: Extract data from Certinia
-        logger.info("Step 3: Extracting data from Certinia Finance Cloud...")
+        logger.info("Step 3: Extracting data from Certinia...")
         if args.company:
-            logger.info(f"Filtering data for company: {args.company}")
-        certinia_data = bulk_client.extract_certinia_data(start_date, end_date, args.company)
-        logger.info(f"✓ Extracted {len(certinia_data.get('journals', []))} transactions")
+            logger.info(f"  Company filter: {args.company}")
+        certinia_data = rest_client.extract_certinia_data(start_date, end_date, args.company)
+        logger.info("✓ Data extraction complete")
         
         # Step 4: Transform data
         logger.info("Step 4: Transforming data for SAF-T format...")
@@ -175,7 +175,6 @@ def main():
             
             # Export both raw and transformed data
             excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
-            logger.info(f"✓ Excel export complete: {excel_path}")
         
         # Summary
         logger.info("=" * 80)

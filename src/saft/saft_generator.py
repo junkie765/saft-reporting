@@ -72,28 +72,14 @@ class SAFTGenerator:
             self._elem(parent, "NameLatin", name)
     
     def _add_balance(self, parent: ET.Element, opening_debit: float, opening_credit: float, 
-                     closing_debit: float, closing_credit: float, is_supplier: bool = False):
-        """Add balance elements following same-side rule"""
-        if is_supplier:
-            # Suppliers: credit balance is typical (payables)
-            if opening_credit >= opening_debit:
-                self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
-            else:
-                self._elem(parent, "OpeningDebitBalance", f"{opening_debit:.2f}")
-            if closing_credit >= closing_debit:
-                self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
-            else:
-                self._elem(parent, "ClosingDebitBalance", f"{closing_debit:.2f}")
+                     closing_debit: float, closing_credit: float):
+        """Add balance elements following same-side rule (closing determines side)"""
+        if closing_credit > 0:
+            self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
+            self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
         else:
-            # Customers/GL accounts: debit balance is typical (receivables/assets)
-            if opening_debit >= opening_credit:
-                self._elem(parent, "OpeningDebitBalance", f"{opening_debit:.2f}")
-            else:
-                self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
-            if closing_debit >= closing_credit:
-                self._elem(parent, "ClosingDebitBalance", f"{closing_debit:.2f}")
-            else:
-                self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
+            self._elem(parent, "OpeningDebitBalance", f"{opening_debit:.2f}")
+            self._elem(parent, "ClosingDebitBalance", f"{closing_debit:.2f}")
     
     def generate(self, saft_data: Dict[str, Any], output_path: Path, 
                  start_date: datetime, end_date: datetime):
@@ -136,8 +122,6 @@ class SAFTGenerator:
             pretty_print=True
         )
         
-        logger.info(f"SAF-T XML generated successfully: {output_path}")
-    
     def _add_header(self, root: ET.Element, header: Dict, start_date: datetime, end_date: datetime):
         """Add Header section according to Bulgarian SAF-T schema"""
         header_elem = self._elem(root, "Header")
@@ -199,8 +183,6 @@ class SAFTGenerator:
         
         # TaxEntity (optional)
         self._elem(header_elem, "TaxEntity", "Company")
-        
-        logger.debug("Header section added")
     
     def _add_master_files(self, root: ET.Element, master_files: Dict, tax_codes: list):
         """Add MasterFilesMonthly section according to Bulgarian SAF-T schema"""
@@ -230,11 +212,9 @@ class SAFTGenerator:
         # Products (required) - Add products from Salesforce
         products_elem = self._elem(master_elem, "Products")
         self._add_products(products_elem, master_files.get('products', []))
-        
-        logger.debug("MasterFilesMonthly section added")
     
     def _add_general_ledger_accounts(self, parent: ET.Element, accounts: list):
-        """Add GeneralLedgerAccount elements, output only one balance side per account"""
+        """Add GeneralLedgerAccount elements with balances following same-side rule"""
         for account in accounts:
             account_elem = self._elem(parent, "Account")
             self._elem(account_elem, "AccountID", str(account['account_id']))
@@ -242,26 +222,12 @@ class SAFTGenerator:
             self._elem(account_elem, "TaxpayerAccountID", str(account['account_id']))
             self._elem(account_elem, "AccountType", "Bifunctional")
             self._elem(account_elem, "AccountCreationDate", "2020-01-01")
-
-            # Output only one balance side for opening and closing
-            # Following Bulgaria.json schema conditions:
-            # - OpeningDebitBalance: ValueHome >= 0
-            # - OpeningCreditBalance: ValueHomeReversed > 0 (credit > 0)
-            # - ClosingDebitBalance: ValueHome >= 0
-            # - ClosingCreditBalance: ValueHomeReversed > 0 (credit > 0)
-            opening_debit = account.get('opening_debit_balance', 0.0)
-            opening_credit = account.get('opening_credit_balance', 0.0)
-            closing_debit = account.get('closing_debit_balance', 0.0)
-            closing_credit = account.get('closing_credit_balance', 0.0)
-
-            # Add balances using same-side rule (closing determines side)
-            if closing_credit > 0:
-                self._elem(account_elem, "OpeningCreditBalance", f"{opening_credit:.2f}")
-                self._elem(account_elem, "ClosingCreditBalance", f"{closing_credit:.2f}")
-            else:
-                self._elem(account_elem, "OpeningDebitBalance", f"{opening_debit:.2f}")
-                self._elem(account_elem, "ClosingDebitBalance", f"{closing_debit:.2f}")
-        logger.debug(f"Added {len(accounts)} GL accounts")
+            
+            self._add_balance(account_elem,
+                            account.get('opening_debit_balance', 0.0),
+                            account.get('opening_credit_balance', 0.0),
+                            account.get('closing_debit_balance', 0.0),
+                            account.get('closing_credit_balance', 0.0))
     
     def _add_customers(self, parent: ET.Element, customers: list):
         """Add Customer elements with CompanyStructure, output only one balance side"""
@@ -278,9 +244,7 @@ class SAFTGenerator:
                             customer.get('opening_debit_balance', 0.0),
                             customer.get('opening_credit_balance', 0.0),
                             customer.get('closing_debit_balance', 0.0),
-                            customer.get('closing_credit_balance', 0.0),
-                            is_supplier=False)
-        logger.debug(f"Added {len(customers)} customers")
+                            customer.get('closing_credit_balance', 0.0))
     
     def _add_suppliers(self, parent: ET.Element, suppliers: list):
         """Add Supplier elements with CompanyStructure, output only one balance side"""
@@ -297,33 +261,21 @@ class SAFTGenerator:
                             supplier.get('opening_debit_balance', 0.0),
                             supplier.get('opening_credit_balance', 0.0),
                             supplier.get('closing_debit_balance', 0.0),
-                            supplier.get('closing_credit_balance', 0.0),
-                            is_supplier=True)
-        logger.debug(f"Added {len(suppliers)} suppliers")
+                            supplier.get('closing_credit_balance', 0.0))
     
     def _add_general_ledger_entries(self, root: ET.Element, entries: list):
         """Add GeneralLedgerEntries section"""
         gl_entries_elem = self._elem(root, "GeneralLedgerEntries")
-        
         self._elem(gl_entries_elem, "NumberOfEntries", str(len(entries)))
         
-        total_debit = sum(
-            sum(line['debit_amount'] for line in entry['lines'])
-            for entry in entries
-        )
-        total_credit = sum(
-            sum(line['credit_amount'] for line in entry['lines'])
-            for entry in entries
-        )
+        total_debit = sum(sum(line['debit_amount'] for line in entry['lines']) for entry in entries)
+        total_credit = sum(sum(line['credit_amount'] for line in entry['lines']) for entry in entries)
         
         self._elem(gl_entries_elem, "TotalDebit", f"{total_debit:.2f}")
         self._elem(gl_entries_elem, "TotalCredit", f"{total_credit:.2f}")
         
-        # Add Journal entries
         for entry in entries:
             self._add_journal_entry(gl_entries_elem, entry)
-        
-        logger.debug(f"Added {len(entries)} GL entries")
     
     def _add_journal_entry(self, parent: ET.Element, entry: Dict):
         """Add a Journal entry according to Bulgarian SAF-T schema"""
@@ -395,15 +347,12 @@ class SAFTGenerator:
     
     def _add_tax_table(self, parent: ET.Element, tax_codes: list):
         """Add TaxTable with tax codes from Salesforce"""
-        
         if not tax_codes:
-            # Fallback to standard Bulgarian VAT if no tax codes found
             tax_entry = self._elem(parent, "TaxTableEntry")
             self._elem(tax_entry, "TaxType", "ДДС")
             self._elem(tax_entry, "TaxCode", "STD")
             self._elem(tax_entry, "TaxPercentage", "20.00")
             self._elem(tax_entry, "Description", "Стандартна ставка на ДДС")
-            logger.debug("Added default tax table entry")
         else:
             for tax_code in tax_codes:
                 tax_entry = self._elem(parent, "TaxTableEntry")
@@ -412,17 +361,12 @@ class SAFTGenerator:
                 self._elem(tax_entry, "TaxPercentage", f"{tax_code.get('tax_percentage', 0):.2f}")
                 if tax_code.get('description'):
                     self._elem(tax_entry, "Description", tax_code['description'])
-            
-            logger.debug(f"Added {len(tax_codes)} tax table entries")
     
     def _add_uom_table(self, parent: ET.Element):
         """Add UOMTable with basic units of measure"""
-        # Add basic unit of measure
         uom_entry = self._elem(parent, "UOMTableEntry")
         self._elem(uom_entry, "UnitOfMeasure", "HUR")
         self._elem(uom_entry, "Description", "Часове")
-        
-        logger.debug("Added UOM table")
     
     def _add_currency_amount(self, parent: ET.Element, element_name: str, amount: float, currency: str = "BGN", exchange_rate: str = "1.0000"):
         """Add currency amount element with standard structure"""
@@ -455,41 +399,28 @@ class SAFTGenerator:
             tax_elem = self._elem(product, "Tax")
             self._elem(tax_elem, "TaxType", prod['tax_type'])
             self._elem(tax_elem, "TaxCode", prod['tax_code'])
-        
-        logger.debug(f"Added {len(products)} products")
     
     def _add_source_documents_monthly(self, root: ET.Element, source_docs: Dict):
-        """Add SourceDocumentsMonthly section (required for monthly reports)"""
+        """Add SourceDocumentsMonthly section"""
         source_docs_elem = self._elem(root, "SourceDocumentsMonthly")
         
-        # Add SalesInvoices
         sales_invoices = source_docs.get('sales_invoices', [])
         if sales_invoices:
-            sales_elem = self._elem(source_docs_elem, "SalesInvoices")
-            self._add_sales_invoices(sales_elem, sales_invoices)
+            self._add_sales_invoices(self._elem(source_docs_elem, "SalesInvoices"), sales_invoices)
         
-        # Add Payments
         payments = source_docs.get('payments', [])
         if payments:
-            payments_elem = self._elem(source_docs_elem, "Payments")
-            self._add_payments(payments_elem, payments)
+            self._add_payments(self._elem(source_docs_elem, "Payments"), payments)
         
-        # Add PurchaseInvoices (empty for now)
         purchase_invoices = source_docs.get('purchase_invoices', [])
         if purchase_invoices:
-            purchase_elem = self._elem(source_docs_elem, "PurchaseInvoices")
-            self._add_purchase_invoices(purchase_elem, purchase_invoices)
-        
-        logger.debug("Added SourceDocumentsMonthly section")
+            self._add_purchase_invoices(self._elem(source_docs_elem, "PurchaseInvoices"), purchase_invoices)
     
     def _add_sales_invoices(self, parent: ET.Element, invoices: list):
         """Add sales invoices to XML"""
-        total_debit = sum(inv.get('total_debit', 0) for inv in invoices)
-        total_credit = sum(inv.get('total_credit', 0) for inv in invoices)
-        
         self._elem(parent, "NumberOfEntries", str(len(invoices)))
-        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
-        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
+        self._elem(parent, "TotalDebit", f"{sum(inv.get('total_debit', 0) for inv in invoices):.2f}")
+        self._elem(parent, "TotalCredit", f"{sum(inv.get('total_credit', 0) for inv in invoices):.2f}")
         
         for invoice in invoices:
             inv_elem = self._elem(parent, "Invoice")
@@ -588,17 +519,12 @@ class SAFTGenerator:
                 self._elem(tax_amt, "Amount", f"{line['tax_amount']:.2f}")
                 self._elem(tax_amt, "CurrencyCode", "BGN")
                 self._elem(tax_amt, "CurrencyAmount", f"{line['tax_amount']:.2f}")
-        
-        logger.debug(f"Added {len(invoices)} sales invoices")
     
     def _add_payments(self, parent: ET.Element, payments: list):
         """Add payments to XML"""
-        total_debit = sum(pay.get('total_debit', 0) for pay in payments)
-        total_credit = sum(pay.get('total_credit', 0) for pay in payments)
-        
         self._elem(parent, "NumberOfEntries", str(len(payments)))
-        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
-        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
+        self._elem(parent, "TotalDebit", f"{sum(pay.get('total_debit', 0) for pay in payments):.2f}")
+        self._elem(parent, "TotalCredit", f"{sum(pay.get('total_credit', 0) for pay in payments):.2f}")
         
         for payment in payments:
             pay_elem = self._elem(parent, "Payment")
@@ -643,25 +569,15 @@ class SAFTGenerator:
                 self._elem(tax_amt, "Amount", "0.00")
                 self._elem(tax_amt, "CurrencyCode", "BGN")
                 self._elem(tax_amt, "CurrencyAmount", "0.00")
-        
-        logger.debug(f"Added {len(payments)} payments")
     
     def _add_purchase_invoices(self, parent: ET.Element, invoices: list):
         """Add purchase invoices to XML"""
+        self._elem(parent, "NumberOfEntries", str(len(invoices)) if invoices else "0")
+        self._elem(parent, "TotalDebit", f"{sum(inv.get('total_debit', 0) for inv in invoices):.2f}")
+        self._elem(parent, "TotalCredit", f"{sum(inv.get('total_credit', 0) for inv in invoices):.2f}")
+        
         if not invoices:
-            self._elem(parent, "NumberOfEntries", "0")
-            self._elem(parent, "TotalDebit", "0.00")
-            self._elem(parent, "TotalCredit", "0.00")
-            logger.debug("Added purchase invoices section (empty)")
             return
-        
-        # Calculate totals
-        total_debit = sum(inv.get('total_debit', 0) for inv in invoices)
-        total_credit = sum(inv.get('total_credit', 0) for inv in invoices)
-        
-        self._elem(parent, "NumberOfEntries", str(len(invoices)))
-        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
-        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
         
         for invoice in invoices:
             invoice_elem = self._elem(parent, "Invoice")
@@ -720,5 +636,3 @@ class SAFTGenerator:
             self._elem(doc_totals, "TaxPayable", f"{sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")
             self._elem(doc_totals, "NetTotal", f"{invoice.get('total_debit', 0):.2f}")
             self._elem(doc_totals, "GrossTotal", f"{invoice.get('total_debit', 0) + sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")
-        
-        logger.info(f"Added {len(invoices)} purchase invoices")
