@@ -13,6 +13,7 @@ from src.salesforce.auth import SalesforceAuth
 from src.transformers.certinia_transformer import CertiniaTransformer
 from src.saft.saft_generator import SAFTGenerator
 from src.utils.logger import setup_logger
+from src.utils.excel_exporter import ExcelExporter
 
 
 def load_config(config_path: str = 'config.json') -> dict:
@@ -69,6 +70,11 @@ def parse_arguments():
         default='INFO',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
         help='Logging level (default: INFO)'
+    )
+    parser.add_argument(
+        '--export-excel',
+        action='store_true',
+        help='Export extracted data to Excel file with separate sheets for each section'
     )
     
     return parser.parse_args()
@@ -129,6 +135,21 @@ def main():
             logger.info(f"Filtering data for company: {args.company}")
         certinia_data = bulk_client.extract_certinia_data(start_date, end_date, args.company)
         logger.info(f"✓ Extracted {len(certinia_data.get('journals', []))} transactions")
+        
+        # Optional: Export raw data to Excel
+        if args.export_excel:
+            logger.info("Step 3a: Exporting raw data to Excel...")
+            excel_exporter = ExcelExporter()
+            
+            # Determine Excel output path
+            output_dir = Path(config['output']['directory'])
+            output_dir.mkdir(exist_ok=True)
+            
+            excel_filename = f"Certinia_Data_{config['saft']['company_id']}_{start_date.year}_{start_date.strftime('%m')}.xlsx"
+            excel_path = output_dir / excel_filename
+            
+            excel_exporter.export(certinia_data, excel_path, start_date, end_date)
+            logger.info(f"✓ Excel export complete: {excel_path}")
         
         # Step 4: Transform data
         logger.info("Step 4: Transforming data for SAF-T format...")

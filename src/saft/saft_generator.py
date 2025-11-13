@@ -41,6 +41,60 @@ class SAFTGenerator:
             elem.text = str(text)
         return elem
     
+    def _add_address(self, parent: ET.Element, address: Dict, address_type: str = "StreetAddress"):
+        """Add Address element with standard structure"""
+        addr_elem = self._elem(parent, "Address")
+        self._elem(addr_elem, "StreetName", address.get('street_name', address.get('street', '')))
+        self._elem(addr_elem, "Number", "")
+        self._elem(addr_elem, "AdditionalAddressDetail", "")
+        self._elem(addr_elem, "Building", "")
+        self._elem(addr_elem, "City", address.get('city', ''))
+        self._elem(addr_elem, "PostalCode", address.get('postal_code', ''))
+        self._elem(addr_elem, "Region", address.get('region', address.get('state_province', '')))
+        self._elem(addr_elem, "Country", address.get('country', 'BG'))
+        self._elem(addr_elem, "AddressType", address_type)
+        return addr_elem
+    
+    def _add_contact(self, parent: ET.Element, contact: Dict):
+        """Add Contact element with standard structure"""
+        contact_elem = self._elem(parent, "Contact")
+        self._elem(contact_elem, "Telephone", contact.get('telephone', ''))
+        self._elem(contact_elem, "Fax", contact.get('fax', ''))
+        self._elem(contact_elem, "Email", contact.get('email', ''))
+        self._elem(contact_elem, "Website", contact.get('website', ''))
+        return contact_elem
+    
+    def _add_company_name(self, parent: ET.Element, name: str):
+        """Add company name in appropriate format (Cyrillic or Latin)"""
+        if any(ord(c) > 127 for c in name):
+            self._elem(parent, "Name", name)
+        else:
+            self._elem(parent, "NameLatin", name)
+    
+    def _add_balance(self, parent: ET.Element, opening_debit: float, opening_credit: float, 
+                     closing_debit: float, closing_credit: float, is_supplier: bool = False):
+        """Add balance elements following same-side rule"""
+        if is_supplier:
+            # Suppliers: credit balance is typical (payables)
+            if opening_credit >= opening_debit:
+                self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
+            else:
+                self._elem(parent, "OpeningDebitBalance", f"{opening_debit:.2f}")
+            if closing_credit >= closing_debit:
+                self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
+            else:
+                self._elem(parent, "ClosingDebitBalance", f"{closing_debit:.2f}")
+        else:
+            # Customers/GL accounts: debit balance is typical (receivables/assets)
+            if opening_debit >= opening_credit:
+                self._elem(parent, "OpeningDebitBalance", f"{opening_debit:.2f}")
+            else:
+                self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
+            if closing_debit >= closing_credit:
+                self._elem(parent, "ClosingDebitBalance", f"{closing_debit:.2f}")
+            else:
+                self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
+    
     def generate(self, saft_data: Dict[str, Any], output_path: Path, 
                  start_date: datetime, end_date: datetime):
         """
@@ -103,23 +157,10 @@ class SAFTGenerator:
         self._elem(company_elem, "Name", company['name'])
         
         # Address (required - at least one)
-        address_elem = self._elem(company_elem, "Address")
-        self._elem(address_elem, "StreetName", company.get('street', ''))
-        self._elem(address_elem, "Number", "")
-        self._elem(address_elem, "AdditionalAddressDetail", "")
-        self._elem(address_elem, "Building", "")
-        self._elem(address_elem, "City", company.get('city', ''))
-        self._elem(address_elem, "PostalCode", company.get('postal_code', ''))
-        self._elem(address_elem, "Region", company.get('state_province', ''))
-        self._elem(address_elem, "Country", company.get('country', 'BG'))
-        self._elem(address_elem, "AddressType", "StreetAddress")
+        self._add_address(company_elem, company)
         
         # Contact (required - at least one)
-        contact_elem = self._elem(company_elem, "Contact")
-        self._elem(contact_elem, "Telephone", company.get('telephone', ''))
-        self._elem(contact_elem, "Fax", company.get('fax', ''))
-        self._elem(contact_elem, "Email", company.get('email', ''))
-        self._elem(contact_elem, "Website", company.get('website', ''))
+        self._add_contact(company_elem, company)
         
         # TaxRegistration (optional)
         if company.get('tax_registration_number'):
@@ -213,15 +254,11 @@ class SAFTGenerator:
             closing_debit = account.get('closing_debit_balance', 0.0)
             closing_credit = account.get('closing_credit_balance', 0.0)
 
-            # Determine which side based on closing (same-side rule)
-            # When closing is credit, opening must be credit; when closing is debit, opening must be debit
-            # When both are zero, default to debit side (follows >= 0 condition)
+            # Add balances using same-side rule (closing determines side)
             if closing_credit > 0:
-                # Closing is credit side - both must be credit
                 self._elem(account_elem, "OpeningCreditBalance", f"{opening_credit:.2f}")
                 self._elem(account_elem, "ClosingCreditBalance", f"{closing_credit:.2f}")
             else:
-                # Closing is debit side (including zero) - both must be debit
                 self._elem(account_elem, "OpeningDebitBalance", f"{opening_debit:.2f}")
                 self._elem(account_elem, "ClosingDebitBalance", f"{closing_debit:.2f}")
         logger.debug(f"Added {len(accounts)} GL accounts")
@@ -232,42 +269,17 @@ class SAFTGenerator:
             customer_elem = self._elem(parent, "Customer")
             company_struct = self._elem(customer_elem, "CompanyStructure")
             self._elem(company_struct, "RegistrationNumber", customer.get('customer_tax_id', ''))
-            company_name = customer['company_name']
-            if any(ord(c) > 127 for c in company_name):
-                self._elem(company_struct, "Name", company_name)
-            else:
-                self._elem(company_struct, "NameLatin", company_name)
-            addr_elem = self._elem(company_struct, "Address")
-            addr = customer.get('billing_address', {})
-            self._elem(addr_elem, "StreetName", addr.get('street_name', ''))
-            self._elem(addr_elem, "Number", "")
-            self._elem(addr_elem, "AdditionalAddressDetail", "")
-            self._elem(addr_elem, "Building", "")
-            self._elem(addr_elem, "City", addr.get('city', ''))
-            self._elem(addr_elem, "PostalCode", addr.get('postal_code', ''))
-            self._elem(addr_elem, "Region", "")
-            self._elem(addr_elem, "Country", addr.get('country', 'BG'))
-            self._elem(addr_elem, "AddressType", "StreetAddress")
-            contact_elem = self._elem(company_struct, "Contact")
-            contact = customer.get('contact', {})
-            self._elem(contact_elem, "Telephone", contact.get('telephone', ""))
-            self._elem(contact_elem, "Fax", contact.get('fax', ""))
-            self._elem(contact_elem, "Email", contact.get('email', ""))
-            self._elem(contact_elem, "Website", contact.get('website', ""))
+            self._add_company_name(company_struct, customer['company_name'])
+            self._add_address(company_struct, customer.get('billing_address', {}))
+            self._add_contact(company_struct, customer.get('contact', {}))
             self._elem(customer_elem, "CustomerID", str(customer.get('customer_id', '')))
             self._elem(customer_elem, "AccountID", str(customer.get('account_id', '')))
-            opening_debit = customer.get('opening_debit_balance', 0.0)
-            opening_credit = customer.get('opening_credit_balance', 0.0)
-            closing_debit = customer.get('closing_debit_balance', 0.0)
-            closing_credit = customer.get('closing_credit_balance', 0.0)
-            if opening_debit >= opening_credit:
-                self._elem(customer_elem, "OpeningDebitBalance", f"{opening_debit:.2f}")
-            else:
-                self._elem(customer_elem, "OpeningCreditBalance", f"{opening_credit:.2f}")
-            if closing_debit >= closing_credit:
-                self._elem(customer_elem, "ClosingDebitBalance", f"{closing_debit:.2f}")
-            else:
-                self._elem(customer_elem, "ClosingCreditBalance", f"{closing_credit:.2f}")
+            self._add_balance(customer_elem,
+                            customer.get('opening_debit_balance', 0.0),
+                            customer.get('opening_credit_balance', 0.0),
+                            customer.get('closing_debit_balance', 0.0),
+                            customer.get('closing_credit_balance', 0.0),
+                            is_supplier=False)
         logger.debug(f"Added {len(customers)} customers")
     
     def _add_suppliers(self, parent: ET.Element, suppliers: list):
@@ -276,42 +288,17 @@ class SAFTGenerator:
             supplier_elem = self._elem(parent, "Supplier")
             company_struct = self._elem(supplier_elem, "CompanyStructure")
             self._elem(company_struct, "RegistrationNumber", supplier.get('supplier_tax_id', ''))
-            company_name = supplier['company_name']
-            if any(ord(c) > 127 for c in company_name):
-                self._elem(company_struct, "Name", company_name)
-            else:
-                self._elem(company_struct, "NameLatin", company_name)
-            addr_elem = self._elem(company_struct, "Address")
-            addr = supplier.get('billing_address', {})
-            self._elem(addr_elem, "StreetName", addr.get('street_name', ''))
-            self._elem(addr_elem, "Number", "")
-            self._elem(addr_elem, "AdditionalAddressDetail", "")
-            self._elem(addr_elem, "Building", "")
-            self._elem(addr_elem, "City", addr.get('city', ''))
-            self._elem(addr_elem, "PostalCode", addr.get('postal_code', ''))
-            self._elem(addr_elem, "Region", "")
-            self._elem(addr_elem, "Country", addr.get('country', 'BG'))
-            self._elem(addr_elem, "AddressType", "StreetAddress")
-            contact_elem = self._elem(company_struct, "Contact")
-            contact = supplier.get('contact', {})
-            self._elem(contact_elem, "Telephone", contact.get('telephone', ""))
-            self._elem(contact_elem, "Fax", contact.get('fax', ""))
-            self._elem(contact_elem, "Email", contact.get('email', ""))
-            self._elem(contact_elem, "Website", contact.get('website', ""))
+            self._add_company_name(company_struct, supplier['company_name'])
+            self._add_address(company_struct, supplier.get('billing_address', {}))
+            self._add_contact(company_struct, supplier.get('contact', {}))
             self._elem(supplier_elem, "SupplierID", str(supplier.get('supplier_id', '')))
             self._elem(supplier_elem, "AccountID", str(supplier.get('account_id', '')))
-            opening_debit = supplier.get('opening_debit_balance', 0.0)
-            opening_credit = supplier.get('opening_credit_balance', 0.0)
-            closing_debit = supplier.get('closing_debit_balance', 0.0)
-            closing_credit = supplier.get('closing_credit_balance', 0.0)
-            if opening_credit >= opening_debit:
-                self._elem(supplier_elem, "OpeningCreditBalance", f"{opening_credit:.2f}")
-            else:
-                self._elem(supplier_elem, "OpeningDebitBalance", f"{opening_debit:.2f}")
-            if closing_credit >= closing_debit:
-                self._elem(supplier_elem, "ClosingCreditBalance", f"{closing_credit:.2f}")
-            else:
-                self._elem(supplier_elem, "ClosingDebitBalance", f"{closing_debit:.2f}")
+            self._add_balance(supplier_elem,
+                            supplier.get('opening_debit_balance', 0.0),
+                            supplier.get('opening_credit_balance', 0.0),
+                            supplier.get('closing_debit_balance', 0.0),
+                            supplier.get('closing_credit_balance', 0.0),
+                            is_supplier=True)
         logger.debug(f"Added {len(suppliers)} suppliers")
     
     def _add_general_ledger_entries(self, root: ET.Element, entries: list):
@@ -386,20 +373,13 @@ class SAFTGenerator:
                 self._elem(line_elem, "Description", line['description'])
             
             # Per Bulgarian SAF-T schema: MUST have either DebitAmount OR CreditAmount (xs:choice)
-            # Add DebitAmount if debit > 0 OR if both are 0 (default to debit side)
+            currency = line.get('currency_code', 'BGN')
+            exchange_rate = line.get('exchange_rate', '1.0000')
+            
             if line['debit_amount'] > 0 or (line['debit_amount'] == 0 and line['credit_amount'] == 0):
-                debit_elem = self._elem(line_elem, "DebitAmount")
-                self._elem(debit_elem, "Amount", f"{line['debit_amount']:.2f}")
-                self._elem(debit_elem, "CurrencyCode", line.get('currency_code', 'BGN'))
-                self._elem(debit_elem, "CurrencyAmount", f"{line['debit_amount']:.2f}")
-                self._elem(debit_elem, "ExchangeRate", line.get('exchange_rate', '1.0000'))
-            # Add CreditAmount if credit > 0
+                self._add_currency_amount(line_elem, "DebitAmount", line['debit_amount'], currency, exchange_rate)
             elif line['credit_amount'] > 0:
-                credit_elem = self._elem(line_elem, "CreditAmount")
-                self._elem(credit_elem, "Amount", f"{line['credit_amount']:.2f}")
-                self._elem(credit_elem, "CurrencyCode", line.get('currency_code', 'BGN'))
-                self._elem(credit_elem, "CurrencyAmount", f"{line['credit_amount']:.2f}")
-                self._elem(credit_elem, "ExchangeRate", line.get('exchange_rate', '1.0000'))
+                self._add_currency_amount(line_elem, "CreditAmount", line['credit_amount'], currency, exchange_rate)
             
             # Tax Information
             tax_info = self._elem(line_elem, "TaxInformation")
@@ -408,12 +388,7 @@ class SAFTGenerator:
             self._elem(tax_info, "TaxPercentage", str(line.get('tax_percentage', 0)))
             self._elem(tax_info, "TaxBase", f"{line.get('tax_base', 0):.2f}")
             self._elem(tax_info, "TaxBaseDescription", line.get('tax_base_description', ''))
-            
-            tax_amount_elem = self._elem(tax_info, "TaxAmount")
-            self._elem(tax_amount_elem, "Amount", f"{line.get('tax_amount', 0):.2f}")
-            self._elem(tax_amount_elem, "CurrencyCode", line.get('currency_code', 'BGN'))
-            self._elem(tax_amount_elem, "CurrencyAmount", f"{line.get('tax_amount', 0):.2f}")
-            self._elem(tax_amount_elem, "ExchangeRate", line.get('exchange_rate', '1.0000'))
+            self._add_currency_amount(tax_info, "TaxAmount", line.get('tax_amount', 0), currency, exchange_rate)
             
             self._elem(tax_info, "TaxExemptionReason", line.get('tax_exemption_reason', ''))
             self._elem(tax_info, "TaxDeclarationPeriod", line.get('tax_declaration_period', ''))
@@ -449,6 +424,16 @@ class SAFTGenerator:
         
         logger.debug("Added UOM table")
     
+    def _add_currency_amount(self, parent: ET.Element, element_name: str, amount: float, currency: str = "BGN", exchange_rate: str = "1.0000"):
+        """Add currency amount element with standard structure"""
+        amount_elem = self._elem(parent, element_name)
+        self._elem(amount_elem, "Amount", f"{amount:.2f}")
+        self._elem(amount_elem, "CurrencyCode", currency)
+        self._elem(amount_elem, "CurrencyAmount", f"{amount:.2f}")
+        if exchange_rate:
+            self._elem(amount_elem, "ExchangeRate", exchange_rate)
+        return amount_elem
+    
     def _add_products(self, parent: ET.Element, products: list):
         """Add Products section from Salesforce Product2 records"""
         for prod in products:
@@ -475,11 +460,265 @@ class SAFTGenerator:
     
     def _add_source_documents_monthly(self, root: ET.Element, source_docs: Dict):
         """Add SourceDocumentsMonthly section (required for monthly reports)"""
-        # Add minimal SourceDocumentsMonthly structure
         source_docs_elem = self._elem(root, "SourceDocumentsMonthly")
         
-        # SalesInvoices (optional but good to include structure)
-        # PurchaseInvoices (optional)
-        # Payments (optional)
-        # For now, add minimal structure
+        # Add SalesInvoices
+        sales_invoices = source_docs.get('sales_invoices', [])
+        if sales_invoices:
+            sales_elem = self._elem(source_docs_elem, "SalesInvoices")
+            self._add_sales_invoices(sales_elem, sales_invoices)
+        
+        # Add Payments
+        payments = source_docs.get('payments', [])
+        if payments:
+            payments_elem = self._elem(source_docs_elem, "Payments")
+            self._add_payments(payments_elem, payments)
+        
+        # Add PurchaseInvoices (empty for now)
+        purchase_invoices = source_docs.get('purchase_invoices', [])
+        if purchase_invoices:
+            purchase_elem = self._elem(source_docs_elem, "PurchaseInvoices")
+            self._add_purchase_invoices(purchase_elem, purchase_invoices)
+        
         logger.debug("Added SourceDocumentsMonthly section")
+    
+    def _add_sales_invoices(self, parent: ET.Element, invoices: list):
+        """Add sales invoices to XML"""
+        total_debit = sum(inv.get('total_debit', 0) for inv in invoices)
+        total_credit = sum(inv.get('total_credit', 0) for inv in invoices)
+        
+        self._elem(parent, "NumberOfEntries", str(len(invoices)))
+        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
+        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
+        
+        for invoice in invoices:
+            inv_elem = self._elem(parent, "Invoice")
+            self._elem(inv_elem, "InvoiceNo", invoice['invoice_no'])
+            
+            # CustomerInfo
+            customer_elem = self._elem(inv_elem, "CustomerInfo")
+            self._elem(customer_elem, "CustomerID", invoice['customer_id'])
+            self._elem(customer_elem, "Name", invoice['customer_name'])
+            billing_addr = self._elem(customer_elem, "BillingAddress")
+            self._elem(billing_addr, "City", "")
+            self._elem(billing_addr, "Country", "BG")
+            
+            self._elem(inv_elem, "AccountID", "411")  # Revenue account
+            self._elem(inv_elem, "BranchStoreNumber", "0")
+            self._elem(inv_elem, "Period", str(invoice['period']))
+            self._elem(inv_elem, "PeriodYear", str(invoice['period_year']))
+            self._elem(inv_elem, "InvoiceDate", invoice['invoice_date'])
+            self._elem(inv_elem, "InvoiceType", "01")  # Standard invoice
+            
+            # ShipTo
+            ship_to = self._elem(inv_elem, "ShipTo")
+            self._elem(ship_to, "DeliveryID", "")
+            self._elem(ship_to, "DeliveryDate", invoice['invoice_date'])
+            self._elem(ship_to, "WarehouseID", "")
+            self._elem(ship_to, "LocationID", "")
+            self._elem(ship_to, "UCR", "")
+            addr = self._elem(ship_to, "Address")
+            self._elem(addr, "City", "")
+            self._elem(addr, "Country", "BG")
+            
+            # ShipFrom
+            ship_from = self._elem(inv_elem, "ShipFrom")
+            self._elem(ship_from, "DeliveryID", "")
+            self._elem(ship_from, "DeliveryDate", invoice['invoice_date'])
+            self._elem(ship_from, "WarehouseID", "")
+            self._elem(ship_from, "LocationID", "")
+            self._elem(ship_from, "UCR", "")
+            addr = self._elem(ship_from, "Address")
+            self._elem(addr, "City", "")
+            self._elem(addr, "Country", "BG")
+            
+            self._elem(inv_elem, "PaymentTerms", "30")
+            self._elem(inv_elem, "SelfBillingIndicator", "N")
+            self._elem(inv_elem, "SourceID", "Certinia")
+            self._elem(inv_elem, "GLPostingDate", invoice['gl_posting_date'])
+            self._elem(inv_elem, "BatchID", "0")
+            self._elem(inv_elem, "SystemID", invoice['system_id'])
+            self._elem(inv_elem, "TransactionID", invoice['invoice_no'])
+            self._elem(inv_elem, "ReceiptNumbers", "")
+            
+            # Invoice Lines
+            for line in invoice['lines']:
+                line_elem = self._elem(inv_elem, "InvoiceLine")
+                self._elem(line_elem, "LineNumber", line['line_number'])
+                self._elem(line_elem, "AccountID", line['account_id'])
+                
+                analysis = self._elem(line_elem, "Analysis")
+                self._elem(analysis, "AnalysisType", "")
+                self._elem(analysis, "AnalysisID", "")
+                
+                self._elem(line_elem, "OrderReferences", "")
+                self._elem(line_elem, "ShipTo", "")
+                self._elem(line_elem, "ShipFrom", "")
+                self._elem(line_elem, "GoodsServicesID", "01")
+                self._elem(line_elem, "ProductCode", line['product_code'])
+                self._elem(line_elem, "ProductDescription", line['product_description'])
+                
+                delivery = self._elem(line_elem, "Delivery")
+                self._elem(delivery, "DeliveryDate", invoice['invoice_date'])
+                
+                self._elem(line_elem, "Quantity", f"{line['quantity']:.2f}")
+                self._elem(line_elem, "InvoiceUOM", "HUR")
+                self._elem(line_elem, "UOMToUOMBaseConversionFactor", "1")
+                self._elem(line_elem, "UnitPrice", f"{line['unit_price']:.2f}")
+                self._elem(line_elem, "TaxPointDate", invoice['invoice_date'])
+                self._elem(line_elem, "References", "")
+                self._elem(line_elem, "Description", line['description'])
+                
+                line_amt = self._elem(line_elem, "InvoiceLineAmount")
+                self._elem(line_amt, "Amount", f"{line['line_amount']:.2f}")
+                self._elem(line_amt, "CurrencyCode", "BGN")
+                self._elem(line_amt, "CurrencyAmount", f"{line['line_amount']:.2f}")
+                
+                self._elem(line_elem, "DebitCreditIndicator", line['debit_credit_indicator'])
+                
+                shipping = self._elem(line_elem, "ShippingCostsAmount")
+                self._elem(shipping, "Amount", "0.00")
+                self._elem(shipping, "CurrencyCode", "BGN")
+                self._elem(shipping, "CurrencyAmount", "0.00")
+                
+                tax_info = self._elem(line_elem, "TaxInformation")
+                self._elem(tax_info, "TaxType", "100010")
+                self._elem(tax_info, "TaxCode", "110010")
+                tax_amt = self._elem(tax_info, "TaxAmount")
+                self._elem(tax_amt, "Amount", f"{line['tax_amount']:.2f}")
+                self._elem(tax_amt, "CurrencyCode", "BGN")
+                self._elem(tax_amt, "CurrencyAmount", f"{line['tax_amount']:.2f}")
+        
+        logger.debug(f"Added {len(invoices)} sales invoices")
+    
+    def _add_payments(self, parent: ET.Element, payments: list):
+        """Add payments to XML"""
+        total_debit = sum(pay.get('total_debit', 0) for pay in payments)
+        total_credit = sum(pay.get('total_credit', 0) for pay in payments)
+        
+        self._elem(parent, "NumberOfEntries", str(len(payments)))
+        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
+        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
+        
+        for payment in payments:
+            pay_elem = self._elem(parent, "Payment")
+            self._elem(pay_elem, "PaymentRefNo", payment['payment_ref_no'])
+            self._elem(pay_elem, "Period", str(payment['period']))
+            self._elem(pay_elem, "PeriodYear", str(payment['period_year']))
+            self._elem(pay_elem, "TransactionID", payment['payment_ref_no'])
+            self._elem(pay_elem, "TransactionDate", payment['payment_date'])
+            self._elem(pay_elem, "PaymentMethod", "03")  # Bank transfer
+            self._elem(pay_elem, "Description", payment.get('reference', 'Payment'))
+            self._elem(pay_elem, "BatchID", "")
+            self._elem(pay_elem, "SystemID", payment['system_id'])
+            self._elem(pay_elem, "SourceID", "Certinia")
+            
+            # Payment Lines
+            for line in payment['lines']:
+                line_elem = self._elem(pay_elem, "PaymentLine")
+                self._elem(line_elem, "LineNumber", line['line_number'])
+                self._elem(line_elem, "SourceDocumentID", payment['system_id'])
+                self._elem(line_elem, "AccountID", line['account_id'])
+                
+                analysis = self._elem(line_elem, "Analysis")
+                self._elem(analysis, "AnalysisType", "")
+                self._elem(analysis, "AnalysisID", "")
+                
+                self._elem(line_elem, "CustomerID", line.get('customer_id', ''))
+                self._elem(line_elem, "SupplierID", "")
+                self._elem(line_elem, "TaxPointDate", payment['payment_date'])
+                self._elem(line_elem, "Description", line['description'])
+                self._elem(line_elem, "DebitCreditIndicator", line['debit_credit_indicator'])
+                
+                line_amt = self._elem(line_elem, "PaymentLineAmount")
+                amount = line['debit_amount'] if line['debit_amount'] > 0 else line['credit_amount']
+                self._elem(line_amt, "Amount", f"{amount:.2f}")
+                self._elem(line_amt, "CurrencyCode", "BGN")
+                self._elem(line_amt, "CurrencyAmount", f"{amount:.2f}")
+                
+                tax_info = self._elem(line_elem, "TaxInformation")
+                self._elem(tax_info, "TaxType", "")
+                self._elem(tax_info, "TaxCode", "")
+                tax_amt = self._elem(tax_info, "TaxAmount")
+                self._elem(tax_amt, "Amount", "0.00")
+                self._elem(tax_amt, "CurrencyCode", "BGN")
+                self._elem(tax_amt, "CurrencyAmount", "0.00")
+        
+        logger.debug(f"Added {len(payments)} payments")
+    
+    def _add_purchase_invoices(self, parent: ET.Element, invoices: list):
+        """Add purchase invoices to XML"""
+        if not invoices:
+            self._elem(parent, "NumberOfEntries", "0")
+            self._elem(parent, "TotalDebit", "0.00")
+            self._elem(parent, "TotalCredit", "0.00")
+            logger.debug("Added purchase invoices section (empty)")
+            return
+        
+        # Calculate totals
+        total_debit = sum(inv.get('total_debit', 0) for inv in invoices)
+        total_credit = sum(inv.get('total_credit', 0) for inv in invoices)
+        
+        self._elem(parent, "NumberOfEntries", str(len(invoices)))
+        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
+        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
+        
+        for invoice in invoices:
+            invoice_elem = self._elem(parent, "Invoice")
+            
+            self._elem(invoice_elem, "InvoiceNo", invoice.get('invoice_no', ''))
+            self._elem(invoice_elem, "InvoiceDate", invoice.get('invoice_date', ''))
+            self._elem(invoice_elem, "InvoiceType", "FT")  # Standard invoice
+            self._elem(invoice_elem, "Period", str(invoice.get('period', '')))
+            self._elem(invoice_elem, "PeriodYear", str(invoice.get('period_year', '')))
+            self._elem(invoice_elem, "GLPostingDate", invoice.get('gl_posting_date', ''))
+            
+            # Supplier info
+            supplier_info = self._elem(invoice_elem, "SupplierInfo")
+            self._elem(supplier_info, "SupplierID", invoice.get('supplier_id', ''))
+            self._elem(supplier_info, "SupplierName", invoice.get('supplier_name', ''))
+            
+            # Lines
+            for line in invoice.get('lines', []):
+                line_elem = self._elem(invoice_elem, "Line")
+                
+                self._elem(line_elem, "LineNumber", line.get('line_number', ''))
+                
+                if line.get('account_id'):
+                    self._elem(line_elem, "AccountID", line.get('account_id', ''))
+                
+                if line.get('product_code'):
+                    self._elem(line_elem, "ProductCode", line.get('product_code', ''))
+                
+                if line.get('product_description'):
+                    self._elem(line_elem, "ProductDescription", line.get('product_description', ''))
+                
+                self._elem(line_elem, "Quantity", f"{line.get('quantity', 0):.2f}")
+                self._elem(line_elem, "UnitPrice", f"{line.get('unit_price', 0):.2f}")
+                
+                # Amount with proper debit/credit handling
+                line_amount = line.get('line_amount', 0)
+                indicator = line.get('debit_credit_indicator', 'D')
+                
+                if indicator == 'D':
+                    debit_elem = self._elem(line_elem, "DebitAmount")
+                    self._elem(debit_elem, "Amount", f"{line_amount:.2f}")
+                    self._elem(debit_elem, "CurrencyCode", "BGN")
+                else:
+                    credit_elem = self._elem(line_elem, "CreditAmount")
+                    self._elem(credit_elem, "Amount", f"{line_amount:.2f}")
+                    self._elem(credit_elem, "CurrencyCode", "BGN")
+                
+                if line.get('tax_amount', 0) > 0:
+                    self._elem(line_elem, "TaxAmount", f"{line.get('tax_amount', 0):.2f}")
+                
+                if line.get('description'):
+                    self._elem(line_elem, "Description", line.get('description', ''))
+            
+            # Document totals
+            doc_totals = self._elem(invoice_elem, "DocumentTotals")
+            self._elem(doc_totals, "TaxPayable", f"{sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")
+            self._elem(doc_totals, "NetTotal", f"{invoice.get('total_debit', 0):.2f}")
+            self._elem(doc_totals, "GrossTotal", f"{invoice.get('total_debit', 0) + sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")
+        
+        logger.info(f"Added {len(invoices)} purchase invoices")

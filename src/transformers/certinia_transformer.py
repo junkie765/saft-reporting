@@ -102,18 +102,35 @@ class CertiniaTransformer:
             'header_comment': saft_config['header_comment']
         }
     
-    def _transform_master_files(self, data: Dict) -> Dict[str, List]:
-        """Transform master data (accounts, customers, suppliers)"""
-        # Get period start date and convert to period name format (YYYY/PPP)
+    def _get_period_info(self) -> Dict[str, Any]:
+        """Get period information from config"""
         period_start_date = self.config['saft']['selection_start_date']
         start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
-        period_start_name = f"{start_dt.year}/{start_dt.month:03d}"
+        previous_period_end = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        return {
+            'period': start_dt.month,
+            'period_year': start_dt.year,
+            'period_start_name': f"{start_dt.year}/{start_dt.month:03d}",
+            'period_start_date': period_start_date,
+            'previous_period_end': previous_period_end
+        }
+    
+    def _get_transaction_date(self, line: Dict) -> str:
+        """Extract transaction date from nested structure"""
+        if 'c2g__Transaction__r' in line and isinstance(line['c2g__Transaction__r'], dict):
+            return line['c2g__Transaction__r'].get('c2g__TransactionDate__c', '')
+        return line.get('c2g__Transaction__r.c2g__TransactionDate__c', '')
+    
+    def _transform_master_files(self, data: Dict) -> Dict[str, List]:
+        """Transform master data (accounts, customers, suppliers)"""
+        period_info = self._get_period_info()
         
         return {
             'general_ledger_accounts': self._transform_gl_accounts(
                 data.get('gl_accounts', []), 
                 data.get('transaction_lines', []),
-                period_start_name
+                period_info['period_start_name']
             ),
             'customers': self._transform_customers(
                 data.get('accounts', []),
@@ -130,16 +147,8 @@ class CertiniaTransformer:
         """Transform general ledger accounts with calculated balances from transaction line items"""
         logger.info(f"Calculating GL balances for {len(gl_accounts)} accounts, period: {period_start_name}")
 
-        # Calculate the previous period end date (day before period start)
-        period_start_date = self.config['saft']['selection_start_date']
-        start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
-        previous_period_end = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
-
-        def get_transaction_date(line: Dict) -> str:
-            """Extract transaction date from nested structure"""
-            if 'c2g__Transaction__r' in line and isinstance(line['c2g__Transaction__r'], dict):
-                return line['c2g__Transaction__r'].get('c2g__TransactionDate__c', '')
-            return line.get('c2g__Transaction__r.c2g__TransactionDate__c', '')
+        period_info = self._get_period_info()
+        previous_period_end = period_info['previous_period_end']
 
         # Build balances by account using NET VALUE approach (matching SAQL logic)
         # Net value = Debit - Credit (positive = debit balance, negative = credit balance)
@@ -160,7 +169,7 @@ class CertiniaTransformer:
                 credit = self._parse_decimal(line.get('c2g__HomeCredits__c', 0))
                 net_value = debit - credit
             
-            transaction_date = get_transaction_date(line)
+            transaction_date = self._get_transaction_date(line)
             
             # Accumulate closing net balance (all transactions through end of CURRENT period)
             closing_balances.setdefault(gl_account_id, 0.0)
@@ -232,24 +241,17 @@ class CertiniaTransformer:
         logger.info(f"Transformed {len(transformed)} GL accounts with calculated balances")
         return transformed
     
-    def _calculate_account_balances(self, transaction_lines: List[Dict]) -> Dict[str, Dict]:
-        """Calculate opening and closing balances for customer/supplier accounts"""
-        period_start_date = self.config['saft']['selection_start_date']
-        start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
-        previous_period_end = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
-        
-        def get_transaction_date(line: Dict) -> str:
-            """Extract transaction date from nested structure"""
-            if 'c2g__Transaction__r' in line and isinstance(line['c2g__Transaction__r'], dict):
-                return line['c2g__Transaction__r'].get('c2g__TransactionDate__c', '')
-            return line.get('c2g__Transaction__r.c2g__TransactionDate__c', '')
+    def _calculate_balances(self, transaction_lines: List[Dict], group_by_field: str) -> Dict[str, Dict]:
+        """Calculate opening and closing balances for accounts grouped by specified field"""
+        period_info = self._get_period_info()
+        previous_period_end = period_info['previous_period_end']
         
         # Build balances by account ID using NET VALUE approach
         opening_balances = {}  # Net balance through end of PREVIOUS period
         closing_balances = {}  # Net balance through end of CURRENT period
         
         for line in transaction_lines:
-            account_id = line.get('c2g__Account__c')
+            account_id = line.get(group_by_field)
             if not account_id:
                 continue
             
@@ -262,7 +264,7 @@ class CertiniaTransformer:
                 credit = self._parse_decimal(line.get('c2g__HomeCredits__c', 0))
                 net_value = debit - credit
             
-            transaction_date = get_transaction_date(line)
+            transaction_date = self._get_transaction_date(line)
             
             # Accumulate closing net balance (all transactions through end of CURRENT period)
             closing_balances.setdefault(account_id, 0.0)
@@ -273,7 +275,11 @@ class CertiniaTransformer:
                 opening_balances.setdefault(account_id, 0.0)
                 opening_balances[account_id] += net_value
         
-        # Convert net balances to debit/credit format for each account
+        # Convert net balances to debit/credit format
+        return self._convert_net_to_debit_credit(opening_balances, closing_balances)
+    
+    def _convert_net_to_debit_credit(self, opening_balances: Dict[str, float], closing_balances: Dict[str, float]) -> Dict[str, Dict]:
+        """Convert net balances to debit/credit format following same-side rule"""
         account_balances = {}
         all_account_ids = set(opening_balances.keys()) | set(closing_balances.keys())
         
@@ -282,8 +288,6 @@ class CertiniaTransformer:
             closing_net = closing_balances.get(account_id, 0.0)
             
             # Determine the side based on closing balance (same-side rule)
-            # For customers: typically debit (receivables)
-            # For suppliers: typically credit (payables)
             if closing_net > 0:
                 # Closing is debit, so opening must also be debit
                 closing_debit = closing_net
@@ -321,17 +325,25 @@ class CertiniaTransformer:
                 'closing_credit_balance': closing_credit
             }
         
-        logger.info(f"Calculated balances for {len(account_balances)} accounts from transaction lines")
+        logger.info(f"Converted {len(account_balances)} account balances")
         return account_balances
     
     def _transform_customers(self, accounts: List[Dict], transaction_lines: List[Dict]) -> List[Dict]:
         """Transform customer accounts with calculated balances"""
         # Calculate balances for each account
-        account_balances = self._calculate_account_balances(transaction_lines)
+        account_balances = self._calculate_balances(transaction_lines, 'c2g__Account__c')
         
         transformed = []
         for acc in accounts:
-            if acc.get('Type') == 'Subco' or acc.get('Type') == 'Partner':
+            # Get RecordType from nested structure
+            record_type = ''
+            if 'RecordType' in acc and isinstance(acc['RecordType'], dict):
+                record_type = acc['RecordType'].get('Name', '')
+            else:
+                record_type = acc.get('RecordType.Name', '')
+            
+            # Only process Standard (customer) accounts
+            if record_type != 'Standard':
                 continue
                 
             account_id = acc.get('Id')
@@ -368,11 +380,19 @@ class CertiniaTransformer:
     def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict]) -> List[Dict]:
         """Transform supplier accounts with calculated balances"""
         # Calculate balances for each account
-        account_balances = self._calculate_account_balances(transaction_lines)
+        account_balances = self._calculate_balances(transaction_lines, 'c2g__Account__c')
         
         transformed = []
         for acc in accounts:
-            if acc.get('Type') != 'Subco' and acc.get('Type') != 'Partner':
+            # Get RecordType from nested structure
+            record_type = ''
+            if 'RecordType' in acc and isinstance(acc['RecordType'], dict):
+                record_type = acc['RecordType'].get('Name', '')
+            else:
+                record_type = acc.get('RecordType.Name', '')
+            
+            # Only process Supplier Data Management accounts
+            if record_type != 'Supplier Data Management':
                 continue
                 
             account_id = acc.get('Id')
@@ -411,11 +431,9 @@ class CertiniaTransformer:
         journals = data.get('journals', [])
         lines = data.get('journal_lines', [])
         
-        # Get period info from config
-        period_start_date = self.config['saft']['selection_start_date']
-        start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
-        period = start_dt.month
-        period_year = start_dt.year
+        period_info = self._get_period_info()
+        period = period_info['period']
+        period_year = period_info['period_year']
         
         # Sort journals by transaction date ascending
         journals_sorted = sorted(journals, key=lambda j: j.get('c2g__JournalDate__c', ''))
@@ -496,13 +514,249 @@ class CertiniaTransformer:
     
     def _transform_source_documents(self, data: Dict) -> Dict[str, List]:
         """Transform source documents (invoices, payments, etc.)"""
-        # This would include sales invoices, purchase invoices, payments
-        # For now, returning empty structure
+        sales_invoices = self._transform_sales_invoices(data)
+        purchase_invoices = self._transform_purchase_invoices(data)
+        payments = self._transform_payments(data)
+        
         return {
-            'sales_invoices': [],
-            'purchase_invoices': [],
-            'payments': []
+            'sales_invoices': sales_invoices,
+            'purchase_invoices': purchase_invoices,
+            'payments': payments
         }
+    
+    def _transform_sales_invoices(self, data: Dict) -> List[Dict]:
+        """Transform sales invoices to SAF-T format"""
+        invoices = data.get('sales_invoices', [])
+        invoice_lines = data.get('sales_invoice_lines', [])
+        
+        period_info = self._get_period_info()
+        period = period_info['period']
+        period_year = period_info['period_year']
+        
+        # Create lookup for lines by invoice
+        lines_by_invoice = {}
+        for line in invoice_lines:
+            invoice_id = line.get('fferpcore__BillingDocument__c')
+            if invoice_id not in lines_by_invoice:
+                lines_by_invoice[invoice_id] = []
+            lines_by_invoice[invoice_id].append(line)
+        
+        transformed = []
+        
+        for invoice in invoices:
+            invoice_id = invoice.get('Id')
+            inv_lines = lines_by_invoice.get(invoice_id, [])
+            
+            if not inv_lines:
+                continue
+            
+            invoice_date = invoice.get('fferpcore__DocumentDate__c', '')
+            account_info = invoice.get('fferpcore__Account__r', {})
+            
+            # Transform invoice lines
+            transformed_lines = []
+            line_number = 1
+            total_debit = 0
+            total_credit = 0
+            
+            for line in inv_lines:
+                net_value = self._parse_decimal(line.get('fferpcore__NetValue__c', 0))
+                tax_value = self._parse_decimal(line.get('fferpcore__TaxValue1__c', 0))
+                quantity = self._parse_decimal(line.get('fferpcore__Quantity__c', 0))
+                unit_price = self._parse_decimal(line.get('fferpcore__UnitPrice__c', 0))
+                
+                product_info = line.get('fferpcore__ProductService__r', {})
+                gl_account = line.get('c2g__GeneralLedgerAccount__r', {})
+                
+                transformed_lines.append({
+                    'line_number': str(line_number),
+                    'account_id': gl_account.get('c2g__ReportingCode__c', ''),
+                    'product_code': product_info.get('ProductCode', ''),
+                    'product_description': product_info.get('Name', ''),
+                    'quantity': quantity,
+                    'unit_price': unit_price,
+                    'line_amount': net_value,
+                    'tax_amount': tax_value,
+                    'description': line.get('fferpcore__LineDescription__c', ''),
+                    'debit_credit_indicator': 'C',  # Sales invoices credit revenue
+                })
+                
+                total_credit += net_value
+                line_number += 1
+            
+            transformed.append({
+                'invoice_no': invoice.get('Name', ''),
+                'invoice_date': invoice_date,
+                'period': period,
+                'period_year': period_year,
+                'customer_id': account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                'customer_name': account_info.get('Name', ''),
+                'gl_posting_date': invoice_date,
+                'system_id': invoice_id,
+                'lines': transformed_lines,
+                'total_debit': total_debit,
+                'total_credit': total_credit
+            })
+        
+        logger.info(f"Transformed {len(transformed)} sales invoices")
+        return transformed
+    
+    def _transform_payments(self, data: Dict) -> List[Dict]:
+        """Transform cash entries (payments) to SAF-T format"""
+        payments = data.get('payments', [])
+        payment_lines = data.get('payment_lines', [])
+        
+        period_info = self._get_period_info()
+        period = period_info['period']
+        period_year = period_info['period_year']
+        
+        # Create lookup for lines by payment
+        lines_by_payment = {}
+        for line in payment_lines:
+            payment_id = line.get('c2g__CashEntry__c')
+            if payment_id not in lines_by_payment:
+                lines_by_payment[payment_id] = []
+            lines_by_payment[payment_id].append(line)
+        
+        transformed = []
+        
+        for payment in payments:
+            payment_id = payment.get('Id')
+            pay_lines = lines_by_payment.get(payment_id, [])
+            
+            if not pay_lines:
+                continue
+            
+            payment_date = payment.get('c2g__Date__c', '')
+            account_info = payment.get('c2g__Account__r', {})
+            
+            # Transform payment lines
+            transformed_lines = []
+            line_number = 1
+            total_debit = 0
+            total_credit = 0
+            
+            for line in pay_lines:
+                cash_value = self._parse_decimal(line.get('c2g__CashEntryValue__c', 0))
+                net_value = self._parse_decimal(line.get('c2g__NetValue__c', 0))
+                line_account_info = line.get('c2g__Account__r', {})
+                
+                # Determine debit/credit based on payment type and value sign
+                payment_type = payment.get('c2g__Type__c', '')
+                if payment_type == 'Receipt' or cash_value > 0:
+                    debit_amount = abs(cash_value)
+                    credit_amount = 0
+                else:
+                    debit_amount = 0
+                    credit_amount = abs(cash_value)
+                
+                transformed_lines.append({
+                    'line_number': str(line_number),
+                    'account_id': line_account_info.get('Name', ''),
+                    'customer_id': line_account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                    'description': line.get('c2g__LineDescription__c', ''),
+                    'debit_amount': debit_amount,
+                    'credit_amount': credit_amount,
+                    'debit_credit_indicator': 'D' if debit_amount > 0 else 'C'
+                })
+                
+                total_debit += debit_amount
+                total_credit += credit_amount
+                line_number += 1
+            
+            transformed.append({
+                'payment_ref_no': payment.get('Name', ''),
+                'payment_date': payment_date,
+                'period': period,
+                'period_year': period_year,
+                'account_id': account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                'account_name': account_info.get('Name', ''),
+                'reference': payment.get('c2g__Reference__c', ''),
+                'system_id': payment_id,
+                'lines': transformed_lines,
+                'total_debit': total_debit,
+                'total_credit': total_credit
+            })
+        
+        logger.info(f"Transformed {len(transformed)} payments")
+        return transformed
+    
+    def _transform_purchase_invoices(self, data: Dict) -> List[Dict]:
+        """Transform purchase invoices (payable invoices) to SAF-T format"""
+        invoices = data.get('purchase_invoices', [])
+        invoice_lines = data.get('purchase_invoice_lines', [])
+        
+        period_info = self._get_period_info()
+        period = period_info['period']
+        period_year = period_info['period_year']
+        
+        # Create lookup for lines by invoice
+        lines_by_invoice = {}
+        for line in invoice_lines:
+            invoice_id = line.get('c2g__PurchaseInvoice__c')
+            if invoice_id not in lines_by_invoice:
+                lines_by_invoice[invoice_id] = []
+            lines_by_invoice[invoice_id].append(line)
+        
+        transformed = []
+        
+        for invoice in invoices:
+            invoice_id = invoice.get('Id')
+            inv_lines = lines_by_invoice.get(invoice_id, [])
+            
+            if not inv_lines:
+                continue
+            
+            invoice_date = invoice.get('c2g__InvoiceDate__c', '')
+            account_info = invoice.get('c2g__Account__r', {})
+            
+            # Transform invoice lines
+            transformed_lines = []
+            line_number = 1
+            total_debit = 0
+            total_credit = 0
+            
+            for line in inv_lines:
+                net_value = self._parse_decimal(line.get('c2g__NetValue__c', 0))
+                tax_value = self._parse_decimal(line.get('c2g__TaxValue1__c', 0))
+                quantity = self._parse_decimal(line.get('F_Quantity__c', 0))
+                unit_price = net_value / quantity if quantity else 0
+                
+                product_info = line.get('F_Product__r', {})
+                gl_account = line.get('c2g__GeneralLedgerAccount__r', {})
+                
+                transformed_lines.append({
+                    'line_number': str(line_number),
+                    'account_id': gl_account.get('c2g__ReportingCode__c', ''),
+                    'product_code': product_info.get('ProductCode', ''),
+                    'product_description': product_info.get('Name', ''),
+                    'quantity': quantity,
+                    'unit_price': unit_price,
+                    'line_amount': net_value,
+                    'tax_amount': tax_value,
+                    'description': line.get('c2g__LineDescription__c', ''),
+                    'debit_credit_indicator': 'D',  # Purchase invoices debit expense
+                })
+                
+                total_debit += net_value
+                line_number += 1
+            
+            transformed.append({
+                'invoice_no': invoice.get('Name', ''),
+                'invoice_date': invoice_date,
+                'period': period,
+                'period_year': period_year,
+                'supplier_id': account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                'supplier_name': account_info.get('Name', ''),
+                'gl_posting_date': invoice_date,
+                'system_id': invoice_id,
+                'lines': transformed_lines,
+                'total_debit': total_debit,
+                'total_credit': total_credit
+            })
+        
+        logger.info(f"Transformed {len(transformed)} purchase invoices")
+        return transformed
     
     def _transform_tax_codes(self, data: Dict) -> List[Dict]:
         """Transform Salesforce tax codes to SAF-T tax table entries"""

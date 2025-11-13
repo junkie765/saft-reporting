@@ -202,7 +202,7 @@ class SalesforceBulkClient:
         logger.info(f"Retrieved {len(all_records)} records via REST API")
         return all_records
     
-    def extract_certinia_data(self, start_date: datetime, end_date: datetime, company_filter: str | None = None) -> Dict[str, List]:
+    def extract_certinia_data(self, start_date: datetime, end_date: datetime, company_filter: str | None = None, sections: set | None = None) -> Dict[str, List]:
         """
         Extract all necessary Certinia data for SAF-T reporting
         
@@ -210,11 +210,17 @@ class SalesforceBulkClient:
             start_date: Start date for extraction
             end_date: End date for extraction
             company_filter: Optional company name to filter data (e.g., "Scalefocus AD")
+            sections: Set of sections to extract. If None, extracts all sections.
+                     Options: 'gl', 'customers', 'suppliers', 'sales_invoices', 'purchase_invoices', 'payments'
             
         Returns:
             Dictionary containing all extracted data
         """
         logger.info("Extracting Certinia Finance Cloud data...")
+        
+        # Default to all sections if not specified
+        if sections is None:
+            sections = {'gl', 'customers', 'suppliers', 'sales_invoices', 'purchase_invoices', 'payments'}
         
         data = {}
         objects_config = self.config['certinia']['objects']
@@ -249,38 +255,107 @@ class SalesforceBulkClient:
         # Build company filter clause for queries
         company_filter_clause = f"AND c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
         
-        # Extract Journal Entries
-        logger.info("Extracting Journal Entries...")
-        journal_query = f"""
-            SELECT Id, Name, c2g__JournalDate__c, c2g__Type__c, 
-                   c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name
-            FROM {objects_config['journal_entry']}
-            WHERE c2g__JournalDate__c >= {start_str} 
-              AND c2g__JournalDate__c <= {end_str}
-              AND c2g__JournalStatus__c = 'Complete'
+        # Extract Journal Entries (GL entries)
+        if 'gl' in sections:
+            logger.info("Extracting Journal Entries...")
+            journal_query = f"""
+                SELECT Id, Name, c2g__JournalDate__c, c2g__Type__c, 
+                       c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name
+                FROM {objects_config['journal_entry']}
+                WHERE c2g__JournalDate__c >= {start_str} 
+                  AND c2g__JournalDate__c <= {end_str}
+                  AND c2g__JournalStatus__c = 'Complete'
+                  {company_filter_clause}
+            """
+            data['journals'] = self.query(journal_query)
+        
+            # Extract Journal Line Items
+            logger.info("Extracting Journal Line Items...")
+            line_query = f"""
+                SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
+                       c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
+                       c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
+                FROM {objects_config['journal_line']}
+                WHERE c2g__Journal__r.c2g__JournalDate__c >= {start_str}
+                  AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}
+                  {company_filter_clause}
+            """
+            data['journal_lines'] = self.query(line_query)
+        else:
+            data['journals'] = []
+            data['journal_lines'] = []
+        
+        # Extract Sales Invoices
+        if 'sales_invoices' in sections:
+            logger.info("Extracting Sales Invoices...")
+            # Billing Documents use fferpcore__Company__c linked to accounting company via c2g__msg_link_ffa_id__c
+            invoice_company_filter = f"AND fferpcore__Company__r.c2g__msg_link_ffa_id__c = '{company_id}'" if company_id else ""
+            sales_invoice_query = f"""
+                SELECT Id, Name, fferpcore__DocumentDate__c, fferpcore__DocumentDueDate__c, fferpcore__Account__c,
+                       fferpcore__Account__r.Name, fferpcore__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                       fferpcore__DocumentStatus__c, CurrencyIsoCode
+                FROM {objects_config['invoice']}
+                WHERE fferpcore__DocumentDate__c >= {start_str}
+                  AND fferpcore__DocumentDate__c <= {end_str}
+                  AND fferpcore__DocumentStatus__c = 'Complete'
+                  {invoice_company_filter}
+            """
+            data['sales_invoices'] = self.query(sales_invoice_query)
+        
+            # Extract Sales Invoice Line Items
+            logger.info("Extracting Sales Invoice Line Items...")
+            # Line items need to filter through parent relationship using c2g__msg_link_ffa_id__c
+            invoice_line_company_filter = f"AND fferpcore__BillingDocument__r.fferpcore__Company__r.c2g__msg_link_ffa_id__c = '{company_id}'" if company_id else ""
+            sales_invoice_line_query = f"""
+                SELECT Id, Name, fferpcore__BillingDocument__c, c2g__GeneralLedgerAccount__c,
+                       c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
+                       fferpcore__ProductService__c, fferpcore__ProductService__r.ProductCode, fferpcore__ProductService__r.Name,
+                       fferpcore__Quantity__c, fferpcore__UnitPrice__c, fferpcore__NetValue__c,
+                       fferpcore__LineDescription__c, fferpcore__TaxCode1__c, fferpcore__TaxCode1__r.Name,
+                       fferpcore__TaxValue1__c
+                FROM {objects_config['invoice_line']}
+                WHERE fferpcore__BillingDocument__r.fferpcore__DocumentDate__c >= {start_str}
+                  AND fferpcore__BillingDocument__r.fferpcore__DocumentDate__c <= {end_str}
+                  {invoice_line_company_filter}
+            """
+            data['sales_invoice_lines'] = self.query(sales_invoice_line_query)
+        else:
+            data['sales_invoices'] = []
+            data['sales_invoice_lines'] = []
+        
+        # Extract Cash Entries (Payments)
+        if 'payments' in sections:
+            logger.info("Extracting Cash Entries (Payments)...")
+            payment_query = f"""
+            SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Period__r.Name,
+                   c2g__Account__c, c2g__Account__r.Name,
+                   c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                   CurrencyIsoCode
+            FROM {objects_config['cash_entry']}
+            WHERE c2g__Date__c >= {start_str}
+              AND c2g__Date__c <= {end_str}
               {company_filter_clause}
         """
-        data['journals'] = self.query(journal_query)
+            data['payments'] = self.query(payment_query)
         
-        # Extract Journal Line Items
-        logger.info("Extracting Journal Line Items...")
-        line_query = f"""
-            SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
-                   c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                   c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
-            FROM {objects_config['journal_line']}
-            WHERE c2g__Journal__r.c2g__JournalDate__c >= {start_str}
-              AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}
-              AND c2g__Journal__r.c2g__OwnerCompany__c = '{company_id}'
-        """ if company_id else f"""
-            SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
-                   c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                   c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
-            FROM {objects_config['journal_line']}
-            WHERE c2g__Journal__r.c2g__JournalDate__c >= {start_str}
-              AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}
-        """
-        data['journal_lines'] = self.query(line_query)
+            # Extract Cash Entry Line Items
+            logger.info("Extracting Cash Entry Line Items...")
+            payment_line_company_filter = f"AND c2g__CashEntry__r.c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
+            payment_line_query = f"""
+                SELECT Id, Name, c2g__CashEntry__c,
+                       c2g__BankAccountValue__c, c2g__CashEntryValue__c, c2g__NetValue__c,
+                       c2g__LineDescription__c, c2g__LineNumber__c,
+                       c2g__Account__c, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                       c2g__Account__r.Name
+                FROM {objects_config['cash_entry_line']}
+                WHERE c2g__CashEntry__r.c2g__Date__c >= {start_str}
+                  AND c2g__CashEntry__r.c2g__Date__c <= {end_str}
+                  {payment_line_company_filter}
+            """
+            data['payment_lines'] = self.query(payment_line_query)
+        else:
+            data['payments'] = []
+            data['payment_lines'] = []
         
         # Extract Transaction Line Items for balance calculations using REST API
         # NOTE: Bulk API has issues with large datasets - using REST API with pagination instead
@@ -350,16 +425,19 @@ class SalesforceBulkClient:
             data['gl_accounts'] = self.query(gl_query)
         
         # Extract Accounts (Customers/Suppliers)
-        logger.info("Extracting Accounts...")
-        account_query = f"""
-            SELECT Id, Name, AccountNumber, Type, BillingStreet, 
-                   BillingCity, BillingPostalCode, BillingCountry, Phone,
-                   c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
-                   c2g__CODAInvoiceEmail__c
-            FROM {objects_config['account']}
-            WHERE (Type != 'Prospect' AND Type != 'Scaleup' AND Type != '')
-        """
-        data['accounts'] = self.query(account_query)
+        if 'customers' in sections or 'suppliers' in sections:
+            logger.info("Extracting Accounts...")
+            account_query = f"""
+                SELECT Id, Name, AccountNumber, Type, BillingStreet, 
+                       BillingCity, BillingPostalCode, BillingCountry, Phone,
+                       c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
+                       c2g__CODAInvoiceEmail__c, RecordType.Name
+                FROM {objects_config['account']}
+                WHERE (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
+            """
+            data['accounts'] = self.query(account_query)
+        else:
+            data['accounts'] = []
         
         # Extract Products (Product2)
         logger.info("Extracting Products...")
@@ -382,6 +460,41 @@ class SalesforceBulkClient:
             FROM c2g__codaTaxCode__c
         """
         data['tax_codes'] = self.query_rest(tax_code_query)
+        
+        # Extract Purchase Invoices (Payable Invoices)
+        if 'purchase_invoices' in sections:
+            logger.info("Extracting Purchase Invoices (Payable Invoices)...")
+            purchase_invoice_query = f"""
+                SELECT Id, Name, c2g__Account__c, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                       c2g__InvoiceDate__c, c2g__DueDate__c, c2g__InvoiceStatus__c,
+                       c2g__AccountInvoiceNumber__c, c2g__InvoiceDescription__c, CurrencyIsoCode
+                FROM {objects_config['payable_invoice']}
+                WHERE c2g__InvoiceDate__c >= {start_str}
+                  AND c2g__InvoiceDate__c <= {end_str}
+                  {company_filter_clause}
+                  AND c2g__InvoiceStatus__c = 'Complete'
+            """
+            data['purchase_invoices'] = self.query(purchase_invoice_query)
+        
+            # Extract Purchase Invoice Line Items
+            logger.info("Extracting Purchase Invoice Line Items...")
+            purchase_line_company_filter = f"AND c2g__PurchaseInvoice__r.c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
+            purchase_invoice_line_query = f"""
+                SELECT Id, Name, c2g__PurchaseInvoice__c, c2g__GeneralLedgerAccount__c,
+                       c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
+                       F_Product__c, F_Product__r.ProductCode, F_Product__r.Name,
+                       F_Quantity__c, c2g__NetValue__c,
+                       c2g__LineDescription__c, c2g__InputVATCode__c, c2g__TaxValue1__c
+                FROM {objects_config['payable_invoice_line']}
+                WHERE c2g__PurchaseInvoice__r.c2g__InvoiceDate__c >= {start_str}
+                  AND c2g__PurchaseInvoice__r.c2g__InvoiceDate__c <= {end_str}
+                  {purchase_line_company_filter}
+                  AND c2g__PurchaseInvoice__r.c2g__InvoiceStatus__c = 'Complete'
+            """
+            data['purchase_invoice_lines'] = self.query(purchase_invoice_line_query)
+        else:
+            data['purchase_invoices'] = []
+            data['purchase_invoice_lines'] = []
         
         # Extract Company Information (if not already extracted by filter)
         if 'company' not in data:
