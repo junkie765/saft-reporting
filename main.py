@@ -136,21 +136,6 @@ def main():
         certinia_data = bulk_client.extract_certinia_data(start_date, end_date, args.company)
         logger.info(f"✓ Extracted {len(certinia_data.get('journals', []))} transactions")
         
-        # Optional: Export raw data to Excel
-        if args.export_excel:
-            logger.info("Step 3a: Exporting raw data to Excel...")
-            excel_exporter = ExcelExporter()
-            
-            # Determine Excel output path
-            output_dir = Path(config['output']['directory'])
-            output_dir.mkdir(exist_ok=True)
-            
-            excel_filename = f"Certinia_Data_{config['saft']['company_id']}_{start_date.year}_{start_date.strftime('%m')}.xlsx"
-            excel_path = output_dir / excel_filename
-            
-            excel_exporter.export(certinia_data, excel_path, start_date, end_date)
-            logger.info(f"✓ Excel export complete: {excel_path}")
-        
         # Step 4: Transform data
         logger.info("Step 4: Transforming data for SAF-T format...")
         transformer = CertiniaTransformer(config)
@@ -177,6 +162,20 @@ def main():
         
         generator.generate(saft_data, output_path, start_date, end_date)
         logger.info(f"✓ SAF-T XML generated: {output_path}")
+        
+        # Step 6: Export to Excel (if requested)
+        if args.export_excel:
+            logger.info("Step 6: Exporting data to Excel...")
+            excel_exporter = ExcelExporter()
+            
+            # Determine Excel output path
+            output_dir = Path(config['output']['directory'])
+            excel_filename = f"Certinia_Data_{config['saft']['company_id']}_{start_date.year}_{start_date.strftime('%m')}.xlsx"
+            excel_path = output_dir / excel_filename
+            
+            # Export both raw and transformed data
+            excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
+            logger.info(f"✓ Excel export complete: {excel_path}")
         
         # Summary
         logger.info("=" * 80)
