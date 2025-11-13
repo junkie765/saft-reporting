@@ -339,38 +339,84 @@ class SAFTGenerator:
         logger.debug(f"Added {len(entries)} GL entries")
     
     def _add_journal_entry(self, parent: ET.Element, entry: Dict):
-        """Add a Journal entry"""
+        """Add a Journal entry according to Bulgarian SAF-T schema"""
         journal_elem = self._elem(parent, "Journal")
         
-        self._elem(journal_elem, "JournalID", entry['transaction_id'])
-        self._elem(journal_elem, "Description", entry.get('description', ''))
+        self._elem(journal_elem, "JournalID", "GL")
+        self._elem(journal_elem, "Description", entry.get('description', 'General Ledger'))
+        self._elem(journal_elem, "Type", "GLEntry")
         
         # Transaction
         trans_elem = self._elem(journal_elem, "Transaction")
         self._elem(trans_elem, "TransactionID", entry['transaction_id'])
         self._elem(trans_elem, "Period", str(entry.get('period', '')))
+        self._elem(trans_elem, "PeriodYear", str(entry.get('period_year', '')))
         self._elem(trans_elem, "TransactionDate", entry['transaction_date'])
-        self._elem(trans_elem, "TransactionType", entry.get('transaction_type', 'N'))
+        self._elem(trans_elem, "SourceID", entry.get('source_id', '0'))
+        self._elem(trans_elem, "TransactionType", entry.get('transaction_type', 'Normal'))
         self._elem(trans_elem, "Description", entry.get('description', ''))
+        self._elem(trans_elem, "BatchID", entry.get('batch_id', '0'))
         self._elem(trans_elem, "SystemEntryDate", entry['system_entry_date'])
         self._elem(trans_elem, "GLPostingDate", entry['gl_posting_date'])
+        self._elem(trans_elem, "CustomerID", entry.get('customer_id', '0'))
+        self._elem(trans_elem, "SupplierID", entry.get('supplier_id', '0'))
+        self._elem(trans_elem, "SystemID", entry.get('system_id', '0'))
         
-        # Lines
+        # Transaction Lines
         for line in entry['lines']:
-            line_elem = self._elem(trans_elem, "Line")
+            line_elem = self._elem(trans_elem, "TransactionLine")
             self._elem(line_elem, "RecordID", line['record_id'])
             self._elem(line_elem, "AccountID", str(line['account_id']))
+            self._elem(line_elem, "TaxpayerAccountID", str(line.get('taxpayer_account_id', line['account_id'])))
             
-            if line['debit_amount'] > 0:
-                debit_elem = self._elem(line_elem, "DebitAmount")
-                self._elem(debit_elem, "Amount", f"{line['debit_amount']:.2f}")
+            # ValueDate
+            if line.get('value_date'):
+                self._elem(line_elem, "ValueDate", line['value_date'])
             
-            if line['credit_amount'] > 0:
-                credit_elem = self._elem(line_elem, "CreditAmount")
-                self._elem(credit_elem, "Amount", f"{line['credit_amount']:.2f}")
+            # SourceDocumentID
+            if line.get('source_document_id'):
+                self._elem(line_elem, "SourceDocumentID", line['source_document_id'])
             
+            # CustomerID and SupplierID
+            self._elem(line_elem, "CustomerID", line.get('customer_id', '0'))
+            self._elem(line_elem, "SupplierID", line.get('supplier_id', '0'))
+            
+            # Description
             if line.get('description'):
                 self._elem(line_elem, "Description", line['description'])
+            
+            # Per Bulgarian SAF-T schema: MUST have either DebitAmount OR CreditAmount (xs:choice)
+            # Add DebitAmount if debit > 0 OR if both are 0 (default to debit side)
+            if line['debit_amount'] > 0 or (line['debit_amount'] == 0 and line['credit_amount'] == 0):
+                debit_elem = self._elem(line_elem, "DebitAmount")
+                self._elem(debit_elem, "Amount", f"{line['debit_amount']:.2f}")
+                self._elem(debit_elem, "CurrencyCode", line.get('currency_code', 'BGN'))
+                self._elem(debit_elem, "CurrencyAmount", f"{line['debit_amount']:.2f}")
+                self._elem(debit_elem, "ExchangeRate", line.get('exchange_rate', '1.0000'))
+            # Add CreditAmount if credit > 0
+            elif line['credit_amount'] > 0:
+                credit_elem = self._elem(line_elem, "CreditAmount")
+                self._elem(credit_elem, "Amount", f"{line['credit_amount']:.2f}")
+                self._elem(credit_elem, "CurrencyCode", line.get('currency_code', 'BGN'))
+                self._elem(credit_elem, "CurrencyAmount", f"{line['credit_amount']:.2f}")
+                self._elem(credit_elem, "ExchangeRate", line.get('exchange_rate', '1.0000'))
+            
+            # Tax Information
+            tax_info = self._elem(line_elem, "TaxInformation")
+            self._elem(tax_info, "TaxType", line.get('tax_type', ''))
+            self._elem(tax_info, "TaxCode", line.get('tax_code', ''))
+            self._elem(tax_info, "TaxPercentage", str(line.get('tax_percentage', 0)))
+            self._elem(tax_info, "TaxBase", f"{line.get('tax_base', 0):.2f}")
+            self._elem(tax_info, "TaxBaseDescription", line.get('tax_base_description', ''))
+            
+            tax_amount_elem = self._elem(tax_info, "TaxAmount")
+            self._elem(tax_amount_elem, "Amount", f"{line.get('tax_amount', 0):.2f}")
+            self._elem(tax_amount_elem, "CurrencyCode", line.get('currency_code', 'BGN'))
+            self._elem(tax_amount_elem, "CurrencyAmount", f"{line.get('tax_amount', 0):.2f}")
+            self._elem(tax_amount_elem, "ExchangeRate", line.get('exchange_rate', '1.0000'))
+            
+            self._elem(tax_info, "TaxExemptionReason", line.get('tax_exemption_reason', ''))
+            self._elem(tax_info, "TaxDeclarationPeriod", line.get('tax_declaration_period', ''))
     
     def _add_tax_table(self, parent: ET.Element, tax_codes: list):
         """Add TaxTable with tax codes from Salesforce"""

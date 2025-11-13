@@ -257,7 +257,7 @@ class SalesforceBulkClient:
             FROM {objects_config['journal_entry']}
             WHERE c2g__JournalDate__c >= {start_str} 
               AND c2g__JournalDate__c <= {end_str}
-              AND c2g__JournalStatus__c = 'Posted'
+              AND c2g__JournalStatus__c = 'Complete'
               {company_filter_clause}
         """
         data['journals'] = self.query(journal_query)
@@ -267,7 +267,7 @@ class SalesforceBulkClient:
         line_query = f"""
             SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
                    c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                   c2g__LineType__c, c2g__Value__c, c2g__LineDescription__c
+                   c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
             FROM {objects_config['journal_line']}
             WHERE c2g__Journal__r.c2g__JournalDate__c >= {start_str}
               AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}
@@ -275,7 +275,7 @@ class SalesforceBulkClient:
         """ if company_id else f"""
             SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
                    c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                   c2g__LineType__c, c2g__Value__c, c2g__LineDescription__c
+                   c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
             FROM {objects_config['journal_line']}
             WHERE c2g__Journal__r.c2g__JournalDate__c >= {start_str}
               AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}

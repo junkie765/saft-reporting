@@ -411,6 +411,15 @@ class CertiniaTransformer:
         journals = data.get('journals', [])
         lines = data.get('journal_lines', [])
         
+        # Get period info from config
+        period_start_date = self.config['saft']['selection_start_date']
+        start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
+        period = start_dt.month
+        period_year = start_dt.year
+        
+        # Sort journals by transaction date ascending
+        journals_sorted = sorted(journals, key=lambda j: j.get('c2g__JournalDate__c', ''))
+        
         # Create lookup for lines by journal
         lines_by_journal = {}
         for line in lines:
@@ -422,38 +431,60 @@ class CertiniaTransformer:
         transformed = []
         transaction_id = 1
         
-        for journal in journals:
+        for journal in journals_sorted:
             journal_id = journal.get('Id')
             journal_lines = lines_by_journal.get(journal_id, [])
             
             if not journal_lines:
                 continue
             
+            journal_date = journal.get('c2g__JournalDate__c', '')
+            
             # Group lines into transaction
             transaction = {
-                'transaction_id': f"T{transaction_id:08d}",
-                'period': journal.get('c2g__Period__r.Name', ''),
-                'transaction_date': journal.get('c2g__JournalDate__c', ''),
-                'transaction_type': journal.get('c2g__Type__c', ''),
-                'description': journal.get('c2g__Reference__c', ''),
-                'system_entry_date': journal.get('c2g__JournalDate__c', ''),
-                'gl_posting_date': journal.get('c2g__JournalDate__c', ''),
+                'transaction_id': str(transaction_id),
+                'period': period,
+                'period_year': period_year,
+                'transaction_date': journal_date,
+                'transaction_type': 'Normal',
+                'description': journal.get('c2g__Reference__c', 'Journal Entry'),
+                'system_entry_date': journal_date,
+                'gl_posting_date': journal_date,
+                'source_id': journal_id or '0',
+                'batch_id': '0',
+                'customer_id': '0',
+                'supplier_id': '0',
+                'system_id': journal_id or '0',
                 'lines': []
             }
             
             line_number = 1
             for line in journal_lines:
-                value = self._parse_decimal(line.get('c2g__Value__c', 0))
-                line_type = line.get('c2g__LineType__c', '')
+                debit_amount = self._parse_decimal(line.get('c2g__Debits__c', 0))
+                credit_amount = self._parse_decimal(line.get('c2g__Credits__c', 0))
+                account_id = line.get('c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c', '')
                 
                 transaction['lines'].append({
-                    'record_id': f"T{transaction_id:08d}-L{line_number:04d}",
-                    'account_id': line.get('c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c', ''),
-                    'analysis_type': line_type,
-                    'debit_amount': value if line_type == 'Debit' else 0,
-                    'credit_amount': value if line_type == 'Credit' else 0,
-                    'amount': value,
+                    'record_id': str(line_number),
+                    'account_id': account_id,
+                    'taxpayer_account_id': account_id,
+                    'debit_amount': debit_amount,
+                    'credit_amount': credit_amount,
                     'description': line.get('c2g__LineDescription__c', ''),
+                    'value_date': journal_date,
+                    'source_document_id': journal_id or '0',
+                    'customer_id': '0',
+                    'supplier_id': '0',
+                    'currency_code': 'BGN',
+                    'exchange_rate': '1.0000',
+                    'tax_type': '',
+                    'tax_code': '',
+                    'tax_percentage': 0,
+                    'tax_base': 0,
+                    'tax_base_description': '',
+                    'tax_amount': 0,
+                    'tax_exemption_reason': '',
+                    'tax_declaration_period': ''
                 })
                 line_number += 1
             
