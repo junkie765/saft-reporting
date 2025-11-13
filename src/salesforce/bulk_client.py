@@ -244,7 +244,7 @@ class SalesforceBulkClient:
                 WHERE Name = '{company_filter}'
                 LIMIT 1
             """
-            company_result = self.query(company_query)
+            company_result = self.query_rest(company_query)
             if company_result:
                 company_id = company_result[0]['Id']
                 data['company'] = company_result
@@ -267,7 +267,7 @@ class SalesforceBulkClient:
                   AND c2g__JournalStatus__c = 'Complete'
                   {company_filter_clause}
             """
-            data['journals'] = self.query(journal_query)
+            data['journals'] = self.query_rest(journal_query)
         
             # Extract Journal Line Items
             logger.info("Extracting Journal Line Items...")
@@ -280,7 +280,7 @@ class SalesforceBulkClient:
                   AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}
                   {company_filter_clause}
             """
-            data['journal_lines'] = self.query(line_query)
+            data['journal_lines'] = self.query_rest(line_query)
         else:
             data['journals'] = []
             data['journal_lines'] = []
@@ -300,7 +300,7 @@ class SalesforceBulkClient:
                   AND fferpcore__DocumentStatus__c = 'Complete'
                   {invoice_company_filter}
             """
-            data['sales_invoices'] = self.query(sales_invoice_query)
+            data['sales_invoices'] = self.query_rest(sales_invoice_query)
         
             # Extract Sales Invoice Line Items
             logger.info("Extracting Sales Invoice Line Items...")
@@ -318,7 +318,7 @@ class SalesforceBulkClient:
                   AND fferpcore__BillingDocument__r.fferpcore__DocumentDate__c <= {end_str}
                   {invoice_line_company_filter}
             """
-            data['sales_invoice_lines'] = self.query(sales_invoice_line_query)
+            data['sales_invoice_lines'] = self.query_rest(sales_invoice_line_query)
         else:
             data['sales_invoices'] = []
             data['sales_invoice_lines'] = []
@@ -327,16 +327,16 @@ class SalesforceBulkClient:
         if 'payments' in sections:
             logger.info("Extracting Cash Entries (Payments)...")
             payment_query = f"""
-            SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Period__r.Name,
-                   c2g__Account__c, c2g__Account__r.Name,
-                   c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
-                   CurrencyIsoCode
-            FROM {objects_config['cash_entry']}
-            WHERE c2g__Date__c >= {start_str}
-              AND c2g__Date__c <= {end_str}
-              {company_filter_clause}
-        """
-            data['payments'] = self.query(payment_query)
+                SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Period__r.Name,
+                       c2g__Account__c, c2g__Account__r.Name,
+                       c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                       CurrencyIsoCode
+                FROM {objects_config['cash_entry']}
+                WHERE c2g__Date__c >= {start_str}
+                  AND c2g__Date__c <= {end_str}
+                  {company_filter_clause}
+            """
+            data['payments'] = self.query_rest(payment_query)
         
             # Extract Cash Entry Line Items
             logger.info("Extracting Cash Entry Line Items...")
@@ -352,7 +352,7 @@ class SalesforceBulkClient:
                   AND c2g__CashEntry__r.c2g__Date__c <= {end_str}
                   {payment_line_company_filter}
             """
-            data['payment_lines'] = self.query(payment_line_query)
+            data['payment_lines'] = self.query_rest(payment_line_query)
         else:
             data['payments'] = []
             data['payment_lines'] = []
@@ -360,17 +360,24 @@ class SalesforceBulkClient:
         # Extract Transaction Line Items for balance calculations using REST API
         # NOTE: Bulk API has issues with large datasets - using REST API with pagination instead
         logger.info("Extracting Transaction Line Items for balance calculations via REST API...")
-        logger.info(f"Extracting transactions up to {end_str} for company {company_filter}")
         
-        # Build query with optional company filter
+        # Optimize query to fetch from fiscal year start (Jan 1) instead of all history
+        # This ensures accurate opening balances while minimizing data volume
+        start_dt = start_date
+        fiscal_year_start = f"{start_dt.year}-01-01"
+        
+        logger.info(f"Extracting transactions from {fiscal_year_start} (fiscal year start) to {end_str} for company {company_filter}")
+        
+        # Build query with optional company filter and date range from fiscal year start
         company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id else ""
         transaction_line_query = f"""
             SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
-                c2g__HomeCredits__c, c2g__HomeDebits__c,
-                c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name
+                   c2g__HomeCredits__c, c2g__HomeDebits__c,
+                   c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name
             FROM c2g__codaTransactionLineItem__c
-            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c <= {end_str}
-                AND c2g__HomeCurrency__r.Name = 'BGN'
+            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c >= {fiscal_year_start}
+                  AND c2g__Transaction__r.c2g__TransactionDate__c <= {end_str}
+                  AND c2g__HomeCurrency__r.Name = 'BGN'
         """
         
         # Use REST API with query_all for pagination
@@ -410,7 +417,7 @@ class SalesforceBulkClient:
                     FROM {objects_config['general_ledger']}
                     WHERE Id IN ('{gl_ids_str}')
                 """
-                data['gl_accounts'] = self.query(gl_query)
+                data['gl_accounts'] = self.query_rest(gl_query)
                 logger.info(f"Extracted {len(data['gl_accounts'])} GL accounts from {len(gl_account_ids)} unique account IDs in transaction lines")
             else:
                 data['gl_accounts'] = []
@@ -422,7 +429,7 @@ class SalesforceBulkClient:
                 FROM {objects_config['general_ledger']}
                 WHERE c2g__ReportingCode__c != null
             """
-            data['gl_accounts'] = self.query(gl_query)
+            data['gl_accounts'] = self.query_rest(gl_query)
         
         # Extract Accounts (Customers/Suppliers)
         if 'customers' in sections or 'suppliers' in sections:
@@ -435,7 +442,7 @@ class SalesforceBulkClient:
                 FROM {objects_config['account']}
                 WHERE (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
             """
-            data['accounts'] = self.query(account_query)
+            data['accounts'] = self.query_rest(account_query)
         else:
             data['accounts'] = []
         
@@ -446,7 +453,7 @@ class SalesforceBulkClient:
             FROM Product2
             WHERE IsActive = true
         """
-        data['products'] = self.query(product_query)
+        data['products'] = self.query_rest(product_query)
         
         # Extract Tax Codes with Rates via REST API (supports subqueries)
         logger.info("Extracting Tax Codes and Rates via REST API...")
@@ -474,7 +481,7 @@ class SalesforceBulkClient:
                   {company_filter_clause}
                   AND c2g__InvoiceStatus__c = 'Complete'
             """
-            data['purchase_invoices'] = self.query(purchase_invoice_query)
+            data['purchase_invoices'] = self.query_rest(purchase_invoice_query)
         
             # Extract Purchase Invoice Line Items
             logger.info("Extracting Purchase Invoice Line Items...")
@@ -491,7 +498,7 @@ class SalesforceBulkClient:
                   {purchase_line_company_filter}
                   AND c2g__PurchaseInvoice__r.c2g__InvoiceStatus__c = 'Complete'
             """
-            data['purchase_invoice_lines'] = self.query(purchase_invoice_line_query)
+            data['purchase_invoice_lines'] = self.query_rest(purchase_invoice_line_query)
         else:
             data['purchase_invoices'] = []
             data['purchase_invoice_lines'] = []
@@ -509,7 +516,7 @@ class SalesforceBulkClient:
                 FROM {objects_config['company']}
                 LIMIT 1
             """
-            data['company'] = self.query(company_query)
+            data['company'] = self.query_rest(company_query)
         
         logger.info("Data extraction complete")
         return data
