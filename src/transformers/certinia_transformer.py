@@ -551,7 +551,7 @@ class CertiniaTransformer:
                 continue
             
             invoice_date = invoice.get('fferpcore__DocumentDate__c', '')
-            account_info = invoice.get('fferpcore__Account__r', {})
+            account_info = invoice.get('fferpcore__Account__r') or {}
             
             # Transform invoice lines
             transformed_lines = []
@@ -565,8 +565,8 @@ class CertiniaTransformer:
                 quantity = self._parse_decimal(line.get('fferpcore__Quantity__c', 0))
                 unit_price = self._parse_decimal(line.get('fferpcore__UnitPrice__c', 0))
                 
-                product_info = line.get('fferpcore__ProductService__r', {})
-                gl_account = line.get('c2g__GeneralLedgerAccount__r', {})
+                product_info = line.get('fferpcore__ProductService__r') or {}
+                gl_account = line.get('c2g__GeneralLedgerAccount__r') or {}
                 
                 transformed_lines.append({
                     'line_number': str(line_number),
@@ -628,7 +628,7 @@ class CertiniaTransformer:
                 continue
             
             payment_date = payment.get('c2g__Date__c', '')
-            account_info = payment.get('c2g__Account__r', {})
+            account_info = payment.get('c2g__Account__r') or {}
             
             # Transform payment lines
             transformed_lines = []
@@ -639,7 +639,7 @@ class CertiniaTransformer:
             for line in pay_lines:
                 cash_value = self._parse_decimal(line.get('c2g__CashEntryValue__c', 0))
                 net_value = self._parse_decimal(line.get('c2g__NetValue__c', 0))
-                line_account_info = line.get('c2g__Account__r', {})
+                line_account_info = line.get('c2g__Account__r') or {}
                 
                 # Determine debit/credit based on payment type and value sign
                 payment_type = payment.get('c2g__Type__c', '')
@@ -708,7 +708,7 @@ class CertiniaTransformer:
                 continue
             
             invoice_date = invoice.get('c2g__InvoiceDate__c', '')
-            account_info = invoice.get('c2g__Account__r', {})
+            account_info = invoice.get('c2g__Account__r') or {}
             
             # Transform invoice lines
             transformed_lines = []
@@ -722,8 +722,8 @@ class CertiniaTransformer:
                 quantity = self._parse_decimal(line.get('F_Quantity__c', 0))
                 unit_price = net_value / quantity if quantity else 0
                 
-                product_info = line.get('F_Product__r', {})
-                gl_account = line.get('c2g__GeneralLedgerAccount__r', {})
+                product_info = line.get('F_Product__r') or {}
+                gl_account = line.get('c2g__GeneralLedgerAccount__r') or {}
                 
                 transformed_lines.append({
                     'line_number': str(line_number),
