@@ -121,6 +121,22 @@ class CertiniaTransformer:
             return line['c2g__Transaction__r'].get('c2g__TransactionDate__c', '')
         return line.get('c2g__Transaction__r.c2g__TransactionDate__c', '')
     
+    def _get_period_number(self, line: Dict) -> str:
+        """Extract period number for comparison from period Name
+        
+        Period Name format is 'YYYY/NNN' (e.g., '2024/001', '2024/000')
+        Returns concatenated string '2024001' or '2024000' for numeric comparison
+        """
+        if 'c2g__Transaction__r' in line and isinstance(line['c2g__Transaction__r'], dict):
+            transaction = line['c2g__Transaction__r']
+            if 'c2g__Period__r' in transaction and isinstance(transaction['c2g__Period__r'], dict):
+                period = transaction['c2g__Period__r']
+                period_name = period.get('Name', '')  # Format: '2024/001'
+                if period_name and '/' in period_name:
+                    year, period_num = period_name.split('/')
+                    return f"{year}{period_num}"  # '2024001'
+        return ''
+    
     def _get_net_value(self, line: Dict) -> float:
         """Extract net value from transaction line"""
         home_value = line.get('c2g__HomeValue__c')
@@ -169,10 +185,10 @@ class CertiniaTransformer:
                 'account_id': account.get('c2g__ReportingCode__c', account.get('Name')),
                 'account_description': account.get('Name', ''),
                 'account_type': account.get('c2g__Type__c', ''),
-                **account_balances.get(account.get('Id'), {
+                **account_balances.get(str(account.get('Id', '')), {
                     'opening_debit_balance': 0.0,
-                    'opening_credit_balance': 0.0,
                     'closing_debit_balance': 0.0,
+                    'opening_credit_balance': 0.0,
                     'closing_credit_balance': 0.0
                 })
             }
@@ -182,10 +198,24 @@ class CertiniaTransformer:
         return transformed
     
     def _calculate_balances(self, transaction_lines: List[Dict], group_by_field: str) -> Dict[str, Dict]:
-        """Calculate opening and closing balances for accounts grouped by specified field"""
-        previous_period_end = self._get_period_info()['previous_period_end']
-        opening_balances = {}  # Net balance through end of PREVIOUS period
-        closing_balances = {}  # Net balance through end of CURRENT period
+        """Calculate opening and closing balances for accounts grouped by specified field
+        
+        Matches Salesforce Analytics trial balance logic:
+        - Opening: sum of transactions where PeriodYearPeriodNumber < current period (before period start)
+        - Closing: sum of transactions where PeriodYearPeriodNumber <= current period (through period end)
+        - Uses period assignment, not transaction date, to match Salesforce's period-based accounting
+        - Debit = sum of positive ValueHome (where ValueHome >= 0)
+        - Credit = sum of absolute value of negative ValueHome (where ValueHome < 0)
+        """
+        period_info = self._get_period_info()
+        current_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
+        logger.debug(f"Calculating balances for period {current_period_number}")
+        
+        # Separate debit and credit accumulators
+        opening_debits = {}   # Sum of positive values before period
+        opening_credits = {}  # Sum of abs(negative values) before period
+        closing_debits = {}   # Sum of positive values through period end
+        closing_credits = {}  # Sum of abs(negative values) through period end
         
         for line in transaction_lines:
             account_id = line.get(group_by_field)
@@ -193,67 +223,119 @@ class CertiniaTransformer:
                 continue
             
             net_value = self._get_net_value(line)
-            transaction_date = self._get_transaction_date(line)
+            period_number = self._get_period_number(line)
             
-            # Accumulate closing balance (all transactions through period end)
-            closing_balances[account_id] = closing_balances.get(account_id, 0.0) + net_value
+            # Skip transactions without period assignment
+            if not period_number:
+                continue
             
-            # Accumulate opening balance (all transactions through previous period end)
-            if transaction_date and transaction_date <= previous_period_end:
-                opening_balances[account_id] = opening_balances.get(account_id, 0.0) + net_value
+            # Accumulate OPENING balances (transactions BEFORE current period)
+            # PeriodYearPeriodNumber < current_period_number (e.g., 2024000 < 2024001)
+            if period_number < current_period_number:
+                if net_value > 0:
+                    # Positive value = Debit
+                    opening_debits[account_id] = opening_debits.get(account_id, 0.0) + net_value
+                elif net_value < 0:
+                    # Negative value = Credit (store as absolute value)
+                    opening_credits[account_id] = opening_credits.get(account_id, 0.0) + abs(net_value)
+            
+            # Accumulate CLOSING balances (transactions THROUGH current period)
+            # PeriodYearPeriodNumber <= current_period_number (e.g., 2024000, 2024001 <= 2024001)
+            if period_number <= current_period_number:
+                if net_value > 0:
+                    # Positive value = Debit
+                    closing_debits[account_id] = closing_debits.get(account_id, 0.0) + net_value
+                elif net_value < 0:
+                    # Negative value = Credit (store as absolute value)
+                    closing_credits[account_id] = closing_credits.get(account_id, 0.0) + abs(net_value)
         
-        return self._convert_net_to_debit_credit(opening_balances, closing_balances)
+        # Convert to final balance structure with same-side rule
+        return self._convert_debit_credit_to_net_position(opening_debits, opening_credits, 
+                                                          closing_debits, closing_credits)
     
-    def _convert_net_to_debit_credit(self, opening_balances: Dict[str, float], closing_balances: Dict[str, float]) -> Dict[str, Dict]:
-        """Convert net balances to debit/credit format following same-side rule"""
+    def _convert_debit_credit_to_net_position(self, opening_debits: Dict[str, float], 
+                                              opening_credits: Dict[str, float],
+                                              closing_debits: Dict[str, float], 
+                                              closing_credits: Dict[str, float]) -> Dict[str, Dict]:
+        """Convert raw debit/credit sums to net position balances following same-side rule
+        
+        This matches Salesforce trial balance logic where:
+        - We calculate net position: net = debits - credits
+        - Closing net determines which side (debit or credit) the account balance belongs on
+        - Opening balance must be on the same side as closing (same-side rule)
+        """
         account_balances = {}
-        all_account_ids = set(opening_balances.keys()) | set(closing_balances.keys())
+        all_account_ids = (set(opening_debits.keys()) | set(opening_credits.keys()) | 
+                          set(closing_debits.keys()) | set(closing_credits.keys()))
         
         for account_id in all_account_ids:
-            opening_net = opening_balances.get(account_id, 0.0)
-            closing_net = closing_balances.get(account_id, 0.0)
+            opening_debit = opening_debits.get(account_id, 0.0)
+            opening_credit = opening_credits.get(account_id, 0.0)
+            closing_debit = closing_debits.get(account_id, 0.0)
+            closing_credit = closing_credits.get(account_id, 0.0)
             
-            # Same-side rule: opening and closing must be on the same side
-            # Closing balance determines the side (debit if positive, credit if negative)
-            if closing_net > 0:  # Debit balance
+            # Calculate net positions
+            opening_net = opening_debit - opening_credit
+            closing_net = closing_debit - closing_credit
+            
+            # Same-side rule: closing net determines the side, opening must match
+            if closing_net > 0:  # Net debit position
                 account_balances[account_id] = {
                     'opening_debit_balance': abs(opening_net),
                     'opening_credit_balance': 0.0,
                     'closing_debit_balance': closing_net,
                     'closing_credit_balance': 0.0
                 }
-            elif closing_net < 0:  # Credit balance
+            elif closing_net < 0:  # Net credit position
                 account_balances[account_id] = {
                     'opening_debit_balance': 0.0,
                     'opening_credit_balance': abs(opening_net),
                     'closing_debit_balance': 0.0,
                     'closing_credit_balance': abs(closing_net)
                 }
-            else:  # Zero closing balance - use opening to determine side or default to debit
-                account_balances[account_id] = {
-                    'opening_debit_balance': opening_net if opening_net > 0 else 0.0,
-                    'opening_credit_balance': abs(opening_net) if opening_net < 0 else 0.0,
-                    'closing_debit_balance': 0.0,
-                    'closing_credit_balance': 0.0
-                }
+            else:  # Zero closing - use opening to determine side
+                if opening_net > 0:
+                    account_balances[account_id] = {
+                        'opening_debit_balance': opening_net,
+                        'opening_credit_balance': 0.0,
+                        'closing_debit_balance': 0.0,
+                        'closing_credit_balance': 0.0
+                    }
+                elif opening_net < 0:
+                    account_balances[account_id] = {
+                        'opening_debit_balance': 0.0,
+                        'opening_credit_balance': abs(opening_net),
+                        'closing_debit_balance': 0.0,
+                        'closing_credit_balance': 0.0
+                    }
+                else:  # Both zero
+                    account_balances[account_id] = {
+                        'opening_debit_balance': 0.0,
+                        'opening_credit_balance': 0.0,
+                        'closing_debit_balance': 0.0,
+                        'closing_credit_balance': 0.0
+                    }
         
         return account_balances
     
     def _transform_customers(self, accounts: List[Dict], transaction_lines: List[Dict]) -> List[Dict]:
         """Transform customer accounts with calculated balances"""
         account_balances = self._calculate_balances(transaction_lines, 'c2g__Account__c')
-        default_balances = {'opening_debit_balance': 0.0, 'opening_credit_balance': 0.0, 
-                           'closing_debit_balance': 0.0, 'closing_credit_balance': 0.0}
+        default_balances = {'opening_debit_balance': 0.0, 'closing_debit_balance': 0.0, 
+                            'opening_credit_balance': 0.0, 'closing_credit_balance': 0.0}
         
         transformed = []
         for acc in accounts:
             if self._get_record_type(acc) != 'Standard':
                 continue
             
-            balances = account_balances.get(acc.get('Id'), default_balances)
+            acc_id = acc.get('Id')
+            if not isinstance(acc_id, str) or not acc_id:
+                continue
+            balances = account_balances.get(acc_id, default_balances)
             
             transformed.append({
-                'customer_id': acc.get('AccountNumber', acc.get('Id')),
+                'customer_id': acc.get('AccountNumber', acc_id),
                 'account_id': acc.get('AccountNumber', ''),
                 'customer_tax_id': acc.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
                 'company_name': acc.get('Name', ''),
@@ -277,15 +359,18 @@ class CertiniaTransformer:
     def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict]) -> List[Dict]:
         """Transform supplier accounts with calculated balances"""
         account_balances = self._calculate_balances(transaction_lines, 'c2g__Account__c')
-        default_balances = {'opening_debit_balance': 0.0, 'opening_credit_balance': 0.0, 
-                           'closing_debit_balance': 0.0, 'closing_credit_balance': 0.0}
+        default_balances = {'opening_debit_balance': 0.0, 'closing_debit_balance': 0.0, 
+                            'opening_credit_balance': 0.0, 'closing_credit_balance': 0.0}
         
         transformed = []
         for acc in accounts:
             if self._get_record_type(acc) != 'Supplier Data Management':
                 continue
             
-            balances = account_balances.get(acc.get('Id'), default_balances)
+            acc_id = acc.get('Id')
+            if not isinstance(acc_id, str) or not acc_id:
+                continue
+            balances = account_balances.get(acc_id, default_balances)
             
             transformed.append({
                 'supplier_id': acc.get('AccountNumber', acc.get('Id')),
