@@ -215,17 +215,18 @@ class SalesforceRestClient:
             data['payments'] = []
             data['payment_lines'] = []
         
-        # Extract Transaction Line Items for balance calculations
-        fiscal_year_start = f"{start_date.year}-01-01"
-        
+        # Extract Transaction Line Items for balance calculations - fetch ALL historical data
+        # Include period information for proper opening/closing balance calculation
         company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id else ""
         transaction_line_query = f"""
             SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
                    c2g__HomeCredits__c, c2g__HomeDebits__c,
-                   c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name
+                   c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name,
+                   c2g__Transaction__r.c2g__Period__r.Name,
+                   c2g__Transaction__r.c2g__Period__r.c2g__PeriodNumber__c,
+                   c2g__Transaction__r.c2g__Period__r.c2g__YearName__c
             FROM c2g__codaTransactionLineItem__c
-            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c >= {fiscal_year_start}
-                  AND c2g__Transaction__r.c2g__TransactionDate__c <= {end_str}
+            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c <= {end_str}
                   AND c2g__HomeCurrency__r.Name = 'BGN'
         """
         

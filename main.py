@@ -138,6 +138,9 @@ def main():
         
         # Step 4: Transform data
         logger.info("Step 4: Transforming data for SAF-T format...")
+        # Update config with command-line dates for transformer
+        config['saft']['selection_start_date'] = start_date.strftime('%Y-%m-%d')
+        config['saft']['selection_end_date'] = end_date.strftime('%Y-%m-%d')
         transformer = CertiniaTransformer(config)
         saft_data = transformer.transform(certinia_data)
         logger.info("✓ Data transformation complete")

@@ -2,7 +2,7 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from lxml import etree as ET
 
 
@@ -24,7 +24,7 @@ class SAFTGenerator:
         """
         self.config = config
     
-    def _elem(self, parent: ET.Element, name: str, text: str = None) -> ET.Element:
+    def _elem(self, parent: ET.Element, name: str, text: 'Optional[str]' = None) -> ET.Element:
         """
         Create element with namespace prefix
         
