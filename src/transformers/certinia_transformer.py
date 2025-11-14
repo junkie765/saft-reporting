@@ -27,18 +27,35 @@ class CertiniaTransformer:
             certinia_data: Raw data from Certinia
             
         Returns:
-            Dictionary structured for SAF-T generation
+            Dictionary structured for SAF-T generation with header, master files,
+            general ledger entries, source documents, and tax codes
         """
         logger.info("Starting SAF-T data transformation...")
         
+        logger.info("Transforming header information...")
+        header = self._transform_header(certinia_data)
+        
+        logger.info("Transforming master files (accounts, customers, suppliers)...")
+        master_files = self._transform_master_files(certinia_data)
+        
+        logger.info("Transforming general ledger entries...")
+        gl_entries = self._transform_gl_entries(certinia_data)
+        
+        logger.info("Transforming source documents...")
+        source_docs = self._transform_source_documents(certinia_data)
+        
+        logger.info("Transforming tax codes...")
+        tax_codes = self._transform_tax_codes(certinia_data)
+        
         saft_data = {
-            'header': self._transform_header(certinia_data),
-            'master_files': self._transform_master_files(certinia_data),
-            'general_ledger_entries': self._transform_gl_entries(certinia_data),
-            'source_documents': self._transform_source_documents(certinia_data),
-            'tax_codes': self._transform_tax_codes(certinia_data)
+            'header': header,
+            'master_files': master_files,
+            'general_ledger_entries': gl_entries,
+            'source_documents': source_docs,
+            'tax_codes': tax_codes
         }
         
+        logger.info("Data transformation complete")
         return saft_data
     
     def _transform_header(self, data: Dict) -> Dict[str, Any]:
@@ -102,16 +119,27 @@ class CertiniaTransformer:
         }
     
     def _get_period_info(self) -> Dict[str, Any]:
-        """Get period information from config"""
+        """Get period information from config
+        
+        For balance calculations:
+        - start_period: Used for opening balance calculation (transactions < start_period)
+        - end_period: Used for closing balance calculation (transactions <= end_period)
+        """
         period_start_date = self.config['saft']['selection_start_date']
+        period_end_date = self.config['saft']['selection_end_date']
+        
         start_dt = datetime.strptime(period_start_date, '%Y-%m-%d')
+        end_dt = datetime.strptime(period_end_date, '%Y-%m-%d')
         previous_period_end = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
         
         return {
-            'period': start_dt.month,
-            'period_year': start_dt.year,
+            'period': end_dt.month,  # End period for closing balance
+            'period_year': end_dt.year,  # End period year for closing balance
+            'start_period': start_dt.month,  # Start period for opening balance
+            'start_period_year': start_dt.year,  # Start period year for opening balance
             'period_start_name': f"{start_dt.year}/{start_dt.month:03d}",
             'period_start_date': period_start_date,
+            'period_end_date': period_end_date,
             'previous_period_end': previous_period_end
         }
     
@@ -201,21 +229,30 @@ class CertiniaTransformer:
         """Calculate opening and closing balances for accounts grouped by specified field
         
         Matches Salesforce Analytics trial balance logic:
-        - Opening: sum of transactions where PeriodYearPeriodNumber < current period (before period start)
-        - Closing: sum of transactions where PeriodYearPeriodNumber <= current period (through period end)
+        - Opening: sum of transactions where PeriodYearPeriodNumber < START period (before period range start)
+        - Closing: sum of transactions where PeriodYearPeriodNumber <= END period (through period range end)
         - Uses period assignment, not transaction date, to match Salesforce's period-based accounting
         - Debit = sum of positive ValueHome (where ValueHome >= 0)
         - Credit = sum of absolute value of negative ValueHome (where ValueHome < 0)
+        
+        Args:
+            transaction_lines: List of transaction line items from Salesforce
+            group_by_field: Field to group balances by (e.g., 'c2g__GeneralLedgerAccount__c')
+            
+        Returns:
+            Dictionary mapping account IDs to their opening/closing debit/credit balances
         """
         period_info = self._get_period_info()
-        current_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
-        logger.debug(f"Calculating balances for period {current_period_number}")
+        start_period_number = f"{period_info['start_period_year']}{period_info['start_period']:03d}"
+        end_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
+        logger.info(f"Calculating balances: Opening before period {start_period_number}, Closing through period {end_period_number}")
+        logger.info(f"Processing {len(transaction_lines)} transaction lines")
         
         # Separate debit and credit accumulators
-        opening_debits = {}   # Sum of positive values before period
-        opening_credits = {}  # Sum of abs(negative values) before period
-        closing_debits = {}   # Sum of positive values through period end
-        closing_credits = {}  # Sum of abs(negative values) through period end
+        opening_debits = {}   # Sum of positive values before START period
+        opening_credits = {}  # Sum of abs(negative values) before START period
+        closing_debits = {}   # Sum of positive values through END period
+        closing_credits = {}  # Sum of abs(negative values) through END period
         
         for line in transaction_lines:
             account_id = line.get(group_by_field)
@@ -229,9 +266,9 @@ class CertiniaTransformer:
             if not period_number:
                 continue
             
-            # Accumulate OPENING balances (transactions BEFORE current period)
-            # PeriodYearPeriodNumber < current_period_number (e.g., 2024000 < 2024001)
-            if period_number < current_period_number:
+            # Accumulate OPENING balances (transactions BEFORE start period)
+            # PeriodYearPeriodNumber < start_period_number (e.g., 2023012 < 2024001)
+            if period_number < start_period_number:
                 if net_value > 0:
                     # Positive value = Debit
                     opening_debits[account_id] = opening_debits.get(account_id, 0.0) + net_value
@@ -239,9 +276,9 @@ class CertiniaTransformer:
                     # Negative value = Credit (store as absolute value)
                     opening_credits[account_id] = opening_credits.get(account_id, 0.0) + abs(net_value)
             
-            # Accumulate CLOSING balances (transactions THROUGH current period)
-            # PeriodYearPeriodNumber <= current_period_number (e.g., 2024000, 2024001 <= 2024001)
-            if period_number <= current_period_number:
+            # Accumulate CLOSING balances (transactions THROUGH end period)
+            # PeriodYearPeriodNumber <= end_period_number (e.g., all 2024 periods <= 2024012)
+            if period_number <= end_period_number:
                 if net_value > 0:
                     # Positive value = Debit
                     closing_debits[account_id] = closing_debits.get(account_id, 0.0) + net_value

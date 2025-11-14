@@ -17,7 +17,18 @@ from src.utils.excel_exporter import ExcelExporter
 
 
 def load_config(config_path: str = 'config.json') -> dict:
-    """Load configuration from JSON file"""
+    """
+    Load configuration from JSON file
+    
+    Args:
+        config_path: Path to configuration file (default: config.json)
+        
+    Returns:
+        Configuration dictionary
+        
+    Raises:
+        SystemExit: If configuration file not found or invalid JSON
+    """
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
@@ -81,7 +92,19 @@ def parse_arguments():
 
 
 def validate_dates(start_date: str, end_date: str) -> tuple:
-    """Validate and parse date strings"""
+    """
+    Validate and parse date strings
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        
+    Returns:
+        Tuple of (start_datetime, end_datetime)
+        
+    Raises:
+        SystemExit: If dates are invalid or in wrong format
+    """
     try:
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
@@ -173,16 +196,17 @@ def main():
             
             # Determine Excel output path
             output_dir = Path(config['output']['directory'])
-            excel_filename = f"Certinia_Data_{config['saft']['company_id']}_{start_date.year}_{start_date.strftime('%m')}.xlsx"
+            excel_filename = f"Certinia_Data_{config['saft']['company_id']}_{start_date.year}_{start_date.strftime('%m')}_{end_date.year}_{end_date.strftime('%m')}.xlsx"
             excel_path = output_dir / excel_filename
             
             # Export both raw and transformed data
             excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
+            logger.info(f"✓ Excel file generated: {excel_path}")
         
         # Summary
         logger.info("=" * 80)
         logger.info("Export completed successfully!")
-        logger.info(f"Output file: {output_path.absolute()}")
+        logger.info(f"SAF-T XML file: {output_path.absolute()}")
         logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
         logger.info("=" * 80)
         

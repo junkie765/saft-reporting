@@ -42,35 +42,42 @@ class SalesforceRestClient:
 
     def query_rest(self, soql_query: str, record_type: str = "records") -> List[Dict[str, Any]]:
         """
-        Execute SOQL query using REST API with pagination support
+        Execute SOQL query using REST API with automatic pagination support
         
         Args:
             soql_query: SOQL query string
-            record_type: Optional descriptive name for the records being queried
+            record_type: Descriptive name for the records being queried (for logging)
             
         Returns:
-            List of records
+            List of records from query results
+            
+        Raises:
+            requests.exceptions.RequestException: If API request fails
         """
         url = f"{self.base_url}/query"
         params = {'q': soql_query}
-        
         all_records = []
         
-        while url:
-            response = requests.get(url, params=params if params else None, headers=self.headers)
-            response.raise_for_status()
+        try:
+            while url:
+                response = requests.get(url, params=params if params else None, headers=self.headers)
+                response.raise_for_status()
+                
+                result = response.json()
+                all_records.extend(result.get('records', []))
+                
+                # Handle pagination
+                url = result.get('nextRecordsUrl')
+                if url:
+                    url = f"{self.instance_url}{url}"
+                    params = None  # params are included in nextRecordsUrl
             
-            result = response.json()
-            all_records.extend(result.get('records', []))
+            logger.info(f"Retrieved {len(all_records)} {record_type}")
+            return all_records
             
-            # Handle pagination
-            url = result.get('nextRecordsUrl')
-            if url:
-                url = f"{self.instance_url}{url}"
-                params = None  # params are in the nextRecordsUrl
-        
-        logger.info(f"Retrieved {len(all_records)} {record_type}")
-        return all_records
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error querying {record_type}: {e}")
+            raise
     
     def extract_certinia_data(self, start_date: datetime, end_date: datetime, 
                             company_filter: str | None = None, 
@@ -126,6 +133,7 @@ class SalesforceRestClient:
         
         # Extract Journal Entries (GL entries)
         if 'gl' in sections:
+            logger.info("Extracting general ledger journal entries...")
             journal_query = f"""
                 SELECT Id, Name, c2g__JournalDate__c, c2g__Type__c, 
                        c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name
@@ -135,7 +143,7 @@ class SalesforceRestClient:
                   AND c2g__JournalStatus__c = 'Complete'
                   {company_filter_clause}
             """
-            data['journals'] = self.query_rest(journal_query, "journals")
+            data['journals'] = self.query_rest(journal_query, "journal entries")
             
             line_query = f"""
                 SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
@@ -153,6 +161,7 @@ class SalesforceRestClient:
         
         # Extract Sales Invoices
         if 'sales_invoices' in sections:
+            logger.info("Extracting sales invoices...")
             invoice_company_filter = f"AND fferpcore__Company__r.c2g__msg_link_ffa_id__c = '{company_id}'" if company_id else ""
             sales_invoice_query = f"""
                 SELECT Id, Name, fferpcore__DocumentDate__c, fferpcore__DocumentDueDate__c, fferpcore__Account__c,
@@ -186,6 +195,7 @@ class SalesforceRestClient:
         
         # Extract Cash Entries (Payments)
         if 'payments' in sections:
+            logger.info("Extracting payment transactions...")
             payment_query = f"""
                 SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Period__r.Name,
                        c2g__Account__c, c2g__Account__r.Name,
@@ -196,7 +206,7 @@ class SalesforceRestClient:
                   AND c2g__Date__c <= {end_str}
                   {company_filter_clause}
             """
-            data['payments'] = self.query_rest(payment_query, "payments")
+            data['payments'] = self.query_rest(payment_query, "payment entries")
             
             payment_line_company_filter = f"AND c2g__CashEntry__r.c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
             payment_line_query = f"""
@@ -217,6 +227,7 @@ class SalesforceRestClient:
         
         # Extract Transaction Line Items for balance calculations - fetch ALL historical data
         # Include period information for proper opening/closing balance calculation
+        logger.info("Extracting transaction lines for balance calculations...")
         company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id else ""
         transaction_line_query = f"""
             SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
