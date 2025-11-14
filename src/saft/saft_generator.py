@@ -214,7 +214,14 @@ class SAFTGenerator:
         self._add_products(products_elem, master_files.get('products', []))
     
     def _add_general_ledger_accounts(self, parent: ET.Element, accounts: list):
-        """Add GeneralLedgerAccount elements with balances following same-side rule"""
+        """
+        Add GeneralLedgerAccount elements with balances following same-side rule
+        
+        Args:
+            parent: Parent XML element
+            accounts: List of GL accounts with calculated balances
+        """
+        logger.info(f"Adding {len(accounts)} general ledger accounts...")
         for account in accounts:
             account_elem = self._elem(parent, "Account")
             self._elem(account_elem, "AccountID", str(account['account_id']))
@@ -230,7 +237,14 @@ class SAFTGenerator:
                             account.get('closing_credit_balance', 0.0))
     
     def _add_customers(self, parent: ET.Element, customers: list):
-        """Add Customer elements with CompanyStructure, output only one balance side"""
+        """
+        Add Customer elements with CompanyStructure and balances
+        
+        Args:
+            parent: Parent XML element
+            customers: List of customers with calculated balances
+        """
+        logger.info(f"Adding {len(customers)} customers...")
         for customer in customers:
             customer_elem = self._elem(parent, "Customer")
             company_struct = self._elem(customer_elem, "CompanyStructure")
@@ -247,7 +261,14 @@ class SAFTGenerator:
                             customer.get('closing_credit_balance', 0.0))
     
     def _add_suppliers(self, parent: ET.Element, suppliers: list):
-        """Add Supplier elements with CompanyStructure, output only one balance side"""
+        """
+        Add Supplier elements with CompanyStructure and balances
+        
+        Args:
+            parent: Parent XML element
+            suppliers: List of suppliers with calculated balances
+        """
+        logger.info(f"Adding {len(suppliers)} suppliers...")
         for supplier in suppliers:
             supplier_elem = self._elem(parent, "Supplier")
             company_struct = self._elem(supplier_elem, "CompanyStructure")
@@ -264,7 +285,14 @@ class SAFTGenerator:
                             supplier.get('closing_credit_balance', 0.0))
     
     def _add_general_ledger_entries(self, root: ET.Element, entries: list):
-        """Add GeneralLedgerEntries section"""
+        """
+        Add GeneralLedgerEntries section
+        
+        Args:
+            root: Root XML element
+            entries: List of general ledger journal entries
+        """
+        logger.info(f"Adding {len(entries)} general ledger entries...")
         gl_entries_elem = self._elem(root, "GeneralLedgerEntries")
         self._elem(gl_entries_elem, "NumberOfEntries", str(len(entries)))
         
@@ -417,7 +445,14 @@ class SAFTGenerator:
             self._add_purchase_invoices(self._elem(source_docs_elem, "PurchaseInvoices"), purchase_invoices)
     
     def _add_sales_invoices(self, parent: ET.Element, invoices: list):
-        """Add sales invoices to XML"""
+        """
+        Add sales invoices to XML
+        
+        Args:
+            parent: Parent XML element
+            invoices: List of sales invoices
+        """
+        logger.info(f"Adding {len(invoices)} sales invoices...")
         self._elem(parent, "NumberOfEntries", str(len(invoices)))
         self._elem(parent, "TotalDebit", f"{sum(inv.get('total_debit', 0) for inv in invoices):.2f}")
         self._elem(parent, "TotalCredit", f"{sum(inv.get('total_credit', 0) for inv in invoices):.2f}")
@@ -521,7 +556,14 @@ class SAFTGenerator:
                 self._elem(tax_amt, "CurrencyAmount", f"{line['tax_amount']:.2f}")
     
     def _add_payments(self, parent: ET.Element, payments: list):
-        """Add payments to XML"""
+        """
+        Add payments to XML
+        
+        Args:
+            parent: Parent XML element
+            payments: List of payment transactions
+        """
+        logger.info(f"Adding {len(payments)} payment transactions...")
         self._elem(parent, "NumberOfEntries", str(len(payments)))
         self._elem(parent, "TotalDebit", f"{sum(pay.get('total_debit', 0) for pay in payments):.2f}")
         self._elem(parent, "TotalCredit", f"{sum(pay.get('total_credit', 0) for pay in payments):.2f}")
@@ -571,8 +613,16 @@ class SAFTGenerator:
                 self._elem(tax_amt, "CurrencyAmount", "0.00")
     
     def _add_purchase_invoices(self, parent: ET.Element, invoices: list):
-        """Add purchase invoices to XML"""
-        self._elem(parent, "NumberOfEntries", str(len(invoices)) if invoices else "0")
+        """
+        Add purchase invoices to XML
+        
+        Args:
+            parent: Parent XML element
+            invoices: List of purchase invoices
+        """
+        invoice_count = len(invoices) if invoices else 0
+        logger.info(f"Adding {invoice_count} purchase invoices...")
+        self._elem(parent, "NumberOfEntries", str(invoice_count))
         self._elem(parent, "TotalDebit", f"{sum(inv.get('total_debit', 0) for inv in invoices):.2f}")
         self._elem(parent, "TotalCredit", f"{sum(inv.get('total_credit', 0) for inv in invoices):.2f}")
         
