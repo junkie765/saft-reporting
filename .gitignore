@@ -26,7 +26,7 @@ ENV/
 env/
 
 # Configuration
-# config.json
+config.json
 .env
 
 # Output
