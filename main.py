@@ -121,12 +121,17 @@ def validate_dates(start_date: str, end_date: str) -> tuple:
 
 def main():
     """Main execution function"""
+    import time
+    
     # Parse arguments
     args = parse_arguments()
     
     # Setup logging
     setup_logger(args.log_level)
     logger = logging.getLogger(__name__)
+    
+    # Track overall execution time
+    total_start_time = time.time()
     
     logger.info("=" * 80)
     logger.info("SAF-T Bulgaria Export - Certinia Finance Cloud")
@@ -143,33 +148,42 @@ def main():
     try:
         # Step 1: Authenticate with Salesforce
         logger.info("Step 1: Authenticating with Salesforce...")
+        step_start = time.time()
         auth = SalesforceAuth(config['salesforce'])
         sf_session = auth.authenticate()
-        logger.info("✓ Authentication successful")
+        step_duration = time.time() - step_start
+        logger.info(f"✓ Authentication successful (took {step_duration:.2f}s)")
         
         # Step 2: Initialize REST API client
         logger.info("Step 2: Initializing REST API client...")
+        step_start = time.time()
         rest_client = SalesforceRestClient(sf_session, config)
-        logger.info("✓ REST API client ready")
+        step_duration = time.time() - step_start
+        logger.info(f"✓ REST API client ready (took {step_duration:.2f}s)")
         
         # Step 3: Extract data from Certinia
         logger.info("Step 3: Extracting data from Certinia...")
         if args.company:
             logger.info(f"  Company filter: {args.company}")
+        step_start = time.time()
         certinia_data = rest_client.extract_certinia_data(start_date, end_date, args.company)
-        logger.info("✓ Data extraction complete")
+        step_duration = time.time() - step_start
+        logger.info(f"✓ Data extraction complete (took {step_duration:.2f}s)")
         
         # Step 4: Transform data
         logger.info("Step 4: Transforming data for SAF-T format...")
+        step_start = time.time()
         # Update config with command-line dates for transformer
         config['saft']['selection_start_date'] = start_date.strftime('%Y-%m-%d')
         config['saft']['selection_end_date'] = end_date.strftime('%Y-%m-%d')
         transformer = CertiniaTransformer(config)
         saft_data = transformer.transform(certinia_data)
-        logger.info("✓ Data transformation complete")
+        step_duration = time.time() - step_start
+        logger.info(f"✓ Data transformation complete (took {step_duration:.2f}s)")
         
         # Step 5: Generate SAF-T XML
         logger.info("Step 5: Generating SAF-T XML file...")
+        step_start = time.time()
         generator = SAFTGenerator(config)
         
         # Determine output path
@@ -181,17 +195,21 @@ def main():
             
             filename = config['output']['filename_pattern'].format(
                 company_id=config['saft']['company_id'],
-                year=start_date.year,
-                month=start_date.strftime('%m')
+                start_year=start_date.year,
+                start_month=start_date.strftime('%m'),
+                end_year=end_date.year,
+                end_month=end_date.strftime('%m')
             )
             output_path = output_dir / filename
         
         generator.generate(saft_data, output_path, start_date, end_date)
-        logger.info(f"✓ SAF-T XML generated: {output_path}")
+        step_duration = time.time() - step_start
+        logger.info(f"✓ SAF-T XML generated: {output_path} (took {step_duration:.2f}s)")
         
         # Step 6: Export to Excel (if requested)
         if args.export_excel:
             logger.info("Step 6: Exporting data to Excel...")
+            step_start = time.time()
             excel_exporter = ExcelExporter()
             
             # Determine Excel output path
@@ -201,13 +219,18 @@ def main():
             
             # Export both raw and transformed data
             excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
-            logger.info(f"✓ Excel file generated: {excel_path}")
+            step_duration = time.time() - step_start
+            logger.info(f"✓ Excel file generated: {excel_path} (took {step_duration:.2f}s)")
+        
+        # Calculate total execution time
+        total_duration = time.time() - total_start_time
         
         # Summary
         logger.info("=" * 80)
         logger.info("Export completed successfully!")
         logger.info(f"SAF-T XML file: {output_path.absolute()}")
         logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
+        logger.info(f"Total execution time: {total_duration:.2f}s ({total_duration/60:.2f} minutes)")
         logger.info("=" * 80)
         
     except Exception as e:
