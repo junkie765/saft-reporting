@@ -36,6 +36,9 @@ output/
 # Archive
 archive/
 
+# Scripts
+scripts/
+
 # IDE
 .vscode/
 .idea/
