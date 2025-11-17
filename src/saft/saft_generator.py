@@ -311,9 +311,13 @@ class SAFTGenerator:
         gl_entries_elem = self._elem(root, "GeneralLedgerEntries")
         self._elem(gl_entries_elem, "NumberOfEntries", str(len(entries)))
         
-        # Calculate totals with validation
-        total_debit = sum(sum(line['debit_amount'] for line in entry['lines']) for entry in entries)
-        total_credit = sum(sum(line['credit_amount'] for line in entry['lines']) for entry in entries)
+        # Calculate totals with validation (single pass instead of two nested loops)
+        total_debit = 0.0
+        total_credit = 0.0
+        for entry in entries:
+            for line in entry['lines']:
+                total_debit += line['debit_amount']
+                total_credit += line['credit_amount']
         
         # Log totals and check balance
         logger.info(f"GL Entries totals: Debit={total_debit:.2f}, Credit={total_credit:.2f}, Difference={abs(total_debit - total_credit):.2f}")

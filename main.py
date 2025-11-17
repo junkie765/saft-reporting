@@ -119,6 +119,38 @@ def validate_dates(start_date: str, end_date: str) -> tuple:
         sys.exit(1)
 
 
+def build_output_filename(config: dict, start_date: datetime, end_date: datetime, extension: str = 'xml', prefix: str = '') -> str:
+    """
+    Build output filename using consistent pattern
+    
+    Args:
+        config: Configuration dictionary
+        start_date: Start date
+        end_date: End date
+        extension: File extension without dot (default: 'xml')
+        prefix: Optional prefix for filename (default: '')
+        
+    Returns:
+        Formatted filename string
+    """
+    company_id = config['saft']['company_id']
+    date_parts = f"{start_date.year}_{start_date.strftime('%m')}_{end_date.year}_{end_date.strftime('%m')}"
+    
+    if extension == 'xml':
+        # Use pattern from config for XML files
+        return config['output']['filename_pattern'].format(
+            company_id=company_id,
+            start_year=start_date.year,
+            start_month=start_date.strftime('%m'),
+            end_year=end_date.year,
+            end_month=end_date.strftime('%m')
+        )
+    else:
+        # Use consistent pattern for other file types
+        base_name = f"{prefix}{company_id}_{date_parts}" if prefix else f"{company_id}_{date_parts}"
+        return f"{base_name}.{extension}"
+
+
 class UILogHandler(logging.Handler):
     """Custom logging handler that sends logs to UI window"""
     def __init__(self, ui_app):
@@ -177,21 +209,13 @@ def main():
     logger.info("SAF-T Bulgaria Export - Certinia Finance Cloud")
     logger.info("=" * 80)
     
-    # Extract parameters from UI selections
-    start_date_str = selections['start_date']
-    end_date_str = selections['end_date']
-    company_name = selections['company']
-    year = selections['year']
-    period_from = selections['period_from']
-    period_to = selections['period_to']
-    
-    logger.info(f"UI selections: Company={company_name}, Year={year}, Period={period_from}-{period_to}")
-    
     # Validate dates (still needed for XML generation)
-    start_date, end_date = validate_dates(start_date_str, end_date_str)
-    logger.info(f"Period range: {year} Period {period_from} to {period_to}")
+    start_date, end_date = validate_dates(selections['start_date'], selections['end_date'])
+    
+    logger.info(f"UI selections: Company={selections['company']}, Year={selections['year']}, Period={selections['period_from']}-{selections['period_to']}")
+    logger.info(f"Period range: {selections['year']} Period {selections['period_from']} to {selections['period_to']}")
     logger.info(f"Date range (for display): {start_date.date()} to {end_date.date()}")
-    logger.info(f"Company filter: {company_name}")
+    logger.info(f"Company filter: {selections['company']}")
     
     try:
         # Step 1: Reuse authenticated REST client from UI (already authenticated)
@@ -206,10 +230,10 @@ def main():
         
         # Step 2: Extract data from Certinia
         logger.info("Step 2: Extracting data from Certinia...")
-        logger.info(f"Note: GL Journals filtered by PERIOD ({year} periods {period_from}-{period_to})")
+        logger.info(f"Note: GL Journals filtered by PERIOD ({selections['year']} periods {selections['period_from']}-{selections['period_to']})")
         logger.info(f"Note: Other documents filtered by DOCUMENT DATE ({start_date.date()} to {end_date.date()})")
         step_start = time.time()
-        certinia_data = rest_client.extract_certinia_data(year, period_from, period_to, start_date, end_date, company_name)
+        certinia_data = rest_client.extract_certinia_data(selections['year'], selections['period_from'], selections['period_to'], start_date, end_date, selections['company'])
         step_duration = time.time() - step_start
         logger.info(f"✓ Data extraction complete (took {step_duration:.2f}s)")
         
@@ -235,15 +259,7 @@ def main():
         else:
             output_dir = Path(config['output']['directory'])
             output_dir.mkdir(exist_ok=True)
-            
-            filename = config['output']['filename_pattern'].format(
-                company_id=config['saft']['company_id'],
-                start_year=start_date.year,
-                start_month=start_date.strftime('%m'),
-                end_year=end_date.year,
-                end_month=end_date.strftime('%m')
-            )
-            output_path = output_dir / filename
+            output_path = output_dir / build_output_filename(config, start_date, end_date, 'xml')
         
         generator.generate(saft_data, output_path, start_date, end_date)
         step_duration = time.time() - step_start
@@ -254,11 +270,8 @@ def main():
             logger.info("Step 5: Exporting data to Excel...")
             step_start = time.time()
             excel_exporter = ExcelExporter()
-            
-            # Determine Excel output path
             output_dir = Path(config['output']['directory'])
-            excel_filename = f"Certinia_Data_{config['saft']['company_id']}_{start_date.year}_{start_date.strftime('%m')}_{end_date.year}_{end_date.strftime('%m')}.xlsx"
-            excel_path = output_dir / excel_filename
+            excel_path = output_dir / build_output_filename(config, start_date, end_date, 'xlsx', 'Certinia_Data_')
             
             # Export both raw and transformed data
             excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
@@ -267,13 +280,15 @@ def main():
         
         # Calculate total execution time
         total_duration = time.time() - total_start_time
+        minutes = int(total_duration // 60)
+        seconds = int(total_duration % 60)
         
         # Summary
         logger.info("=" * 80)
         logger.info("Export completed successfully!", extra={'level': 'SUCCESS'})
         logger.info(f"SAF-T XML file: {output_path.absolute()}")
         logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
-        logger.info(f"Total execution time: {total_duration:.2f}s ({total_duration/60:.2f} minutes)")
+        logger.info(f"Total execution time: {total_duration:.2f}s ({minutes} minutes and {seconds} seconds)")
         logger.info("=" * 80)
         
         # Stop progress and keep window open

@@ -1,5 +1,8 @@
 """Salesforce REST API client"""
 import logging
+import time
+import csv
+import io
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Set
 import requests
@@ -77,6 +80,142 @@ class SalesforceRestClient:
             
         except requests.exceptions.RequestException as e:
             logger.error(f"Error querying {record_type}: {e}")
+            raise
+    
+    def query_bulk(self, soql_query: str, record_type: str = "records") -> List[Dict[str, Any]]:
+        """
+        Execute SOQL query using Bulk API v2 for large datasets (optimized for 1M+ records)
+        
+        Args:
+            soql_query: SOQL query string
+            record_type: Descriptive name for the records being queried (for logging)
+            
+        Returns:
+            List of records from query results
+            
+        Raises:
+            requests.exceptions.RequestException: If API request fails
+        """
+        bulk_url = f"{self.base_url}/jobs/query"
+        
+        try:
+            # Step 1: Create bulk query job
+            logger.info(f"Creating Bulk API v2 job for {record_type}...")
+            job_data = {
+                "operation": "query",
+                "query": soql_query
+            }
+            response = requests.post(bulk_url, json=job_data, headers=self.headers)
+            response.raise_for_status()
+            job_info = response.json()
+            job_id = job_info['id']
+            logger.info(f"Bulk job created: {job_id}")
+            
+            # Step 2: Poll job status until complete
+            job_status_url = f"{bulk_url}/{job_id}"
+            max_wait = 600  # 10 minutes max wait
+            wait_time = 0
+            poll_interval = 2  # Start with 2 seconds
+            
+            while wait_time < max_wait:
+                time.sleep(poll_interval)
+                wait_time += poll_interval
+                
+                response = requests.get(job_status_url, headers=self.headers)
+                response.raise_for_status()
+                job_info = response.json()
+                state = job_info['state']
+                
+                if state == 'JobComplete':
+                    num_records = job_info.get('numberRecordsProcessed', 0)
+                    logger.info(f"Bulk job completed: {num_records} records processed in {wait_time}s")
+                    break
+                elif state == 'Failed':
+                    error_msg = job_info.get('errorMessage', 'Unknown error')
+                    raise Exception(f"Bulk job failed: {error_msg}")
+                elif state == 'Aborted':
+                    raise Exception("Bulk job was aborted")
+                
+                # Increase poll interval gradually (2s -> 5s -> 10s)
+                if wait_time > 30 and poll_interval < 5:
+                    poll_interval = 5
+                elif wait_time > 120 and poll_interval < 10:
+                    poll_interval = 10
+                
+                if wait_time % 20 == 0:  # Log every 20 seconds
+                    logger.info(f"Bulk job status: {state} (waited {wait_time}s)...")
+            
+            if wait_time >= max_wait:
+                raise TimeoutError(f"Bulk job timed out after {max_wait}s")
+            
+            # Step 3: Retrieve results as CSV (with locator pagination for large datasets)
+            results_url = f"{job_status_url}/results"
+            headers_csv = self.headers.copy()
+            headers_csv['Accept'] = 'text/csv'
+            
+            logger.info(f"Downloading results for {record_type}...")
+            all_records = []
+            locator = None
+            batch_count = 0
+            
+            while True:
+                batch_count += 1
+                # Add locator to URL if this is not the first batch
+                if locator:
+                    batch_url = f"{results_url}?locator={locator}"
+                    logger.info(f"Fetching batch {batch_count} with locator...")
+                else:
+                    batch_url = results_url
+                
+                response = requests.get(batch_url, headers=headers_csv, stream=True)
+                response.raise_for_status()
+                
+                # Parse CSV batch directly into all_records (avoid intermediate list)
+                csv_content = response.content.decode('utf-8')
+                csv_reader = csv.DictReader(io.StringIO(csv_content))
+                batch_start = len(all_records)
+                
+                for row in csv_reader:
+                    # Convert CSV row to match REST API nested structure
+                    record = {}
+                    for key, value in row.items():
+                        # Convert empty strings to None, skip if value is empty
+                        if value == '':
+                            value = None
+                        
+                        # Handle nested fields (e.g., "c2g__Transaction__r.c2g__Period__r.Name")
+                        if '.' in key:
+                            parts = key.split('.')
+                            current = record
+                            
+                            # Build nested structure (use setdefault for cleaner code)
+                            for part in parts[:-1]:
+                                current = current.setdefault(part, {})
+                            
+                            # Set final value
+                            current[parts[-1]] = value
+                        else:
+                            # Simple field
+                            record[key] = value
+                    
+                    all_records.append(record)
+                
+                batch_size = len(all_records) - batch_start
+                logger.info(f"Batch {batch_count}: Retrieved {batch_size} records (total: {len(all_records)})")
+                
+                # Check for more batches via Sforce-Locator header
+                locator = response.headers.get('Sforce-Locator')
+                if not locator or locator.lower() == 'null':
+                    break
+            
+            logger.info(f"Retrieved {len(all_records)} {record_type} via Bulk API v2 ({batch_count} batches)")
+            return all_records
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error in Bulk API query for {record_type}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error in Bulk API query for {record_type}: {e}")
             raise
     
     def extract_certinia_data(self, year: str, period_from: str, period_to: str,
@@ -166,7 +305,7 @@ class SalesforceRestClient:
                   {company_filter_clause}
             """
             data['journals'] = self.query_rest(journal_query, "journal entries")
-            logger.info(f"Found {len(data['journals'])} journals with periods: {[j.get('c2g__Period__r', {}).get('Name') for j in data['journals'][:5]]}")
+            logger.info(f"Found {len(data['journals'])} journals.")
             
             line_query = f"""
                 SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
@@ -252,15 +391,13 @@ class SalesforceRestClient:
         logger.info("Extracting transaction lines for balance calculations...")
         company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id and isinstance(company_id, str) else ""
         
-        # Fetch transaction lines from beginning of company operations through end date + buffer
-        # For accurate opening balance calculation, we need ALL historical transactions
-        # IMPORTANT: Add 3-month buffer after period end to capture transactions that have later
-        # transaction dates but are assigned to the selected period (accrual accounting)
-        start_date_filter = datetime(2020, 1, 1).strftime('%Y-%m-%d')
-        # Add 3 months buffer to end date to catch late-dated transactions assigned to period
-        end_date_with_buffer = (datetime.strptime(end_str, '%Y-%m-%d') + timedelta(days=90)).strftime('%Y-%m-%d')
-        logger.info(f"Transaction lines: Fetching from {start_date_filter} through {end_date_with_buffer} (period end + 3 months buffer)")
-        logger.info(f"Note: Extended date range to capture transactions with later transaction dates assigned to period {year}/{int(period_to):03d}")
+        # Fetch ALL transaction lines through the selected period for accurate balance calculation
+        # CRITICAL: We need ALL historical transactions to calculate opening balances correctly
+        # Cannot filter by year in SOQL due to field type ambiguity, so fetch all and filter in code
+        # The transformer will handle period-based filtering for opening/closing balances
+        
+        logger.info(f"Transaction lines: Fetching ALL transactions with periods assigned")
+        logger.info(f"Note: Balance calculations will filter by period {year}/{int(period_to):03d}")
         logger.info(f"Note: This may take a while for large datasets...")
         
         transaction_line_query = f"""
@@ -271,18 +408,12 @@ class SalesforceRestClient:
                    c2g__Transaction__r.c2g__Period__r.c2g__PeriodNumber__c,
                    c2g__Transaction__r.c2g__Period__r.c2g__YearName__c
             FROM c2g__codaTransactionLineItem__c
-            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c >= {start_date_filter}
-                  AND c2g__Transaction__r.c2g__TransactionDate__c <= {end_date_with_buffer}
-                  AND c2g__Transaction__r.c2g__Period__r.Name != null
+            WHERE {company_filter_sql}c2g__Transaction__r.c2g__Period__r.Name != null
                   AND c2g__HomeCurrency__r.Name = 'BGN'
         """
         
-        result = self.sf_session.query_all(transaction_line_query)
-        transaction_lines = result.get('records', [])
-        logger.info(f"Retrieved {len(transaction_lines)} transaction line items for balance calculations")
-        if transaction_lines:
-            sample_periods = [tl.get('c2g__Transaction__r', {}).get('c2g__Period__r', {}).get('Name') for tl in transaction_lines[:5]]
-            logger.info(f"Sample transaction periods: {sample_periods}")
+        # Use Bulk API v2 for large transaction line queries (600k+ records)
+        transaction_lines = self.query_bulk(transaction_line_query, "transaction line items for balance calculations")
         
         # Remove Salesforce metadata attributes
         for record in transaction_lines:
