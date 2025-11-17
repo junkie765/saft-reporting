@@ -45,6 +45,7 @@ class SaftReportingUI:
         self.month_var = tk.StringVar()
         self.report_type_var = tk.StringVar(value="Monthly")
         self.export_excel_var = tk.BooleanVar(value=False)
+        self.selections_ready = False
         
         # Authenticate once and cache the REST client
         self.rest_client = None
@@ -209,8 +210,20 @@ class SaftReportingUI:
         elif company_names:
             self.company_combo.set(company_names[0])
         
+        # Report Type picklist
+        ttk.Label(main_frame, text="Report Type:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.report_type_combo = ttk.Combobox(
+            main_frame,
+            textvariable=self.report_type_var,
+            values=["Annual", "Monthly"],
+            state="readonly",
+            width=23
+        )
+        self.report_type_combo.grid(row=1, column=1, sticky="ew", pady=5)
+        self.report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
+        
         # Year field - dropdown with Salesforce years
-        ttk.Label(main_frame, text="Year:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Year:").grid(row=2, column=0, sticky=tk.W, pady=5)
         self.year_combo = ttk.Combobox(
             main_frame,
             textvariable=self.year_var,
@@ -218,7 +231,7 @@ class SaftReportingUI:
             state="readonly",
             width=23
         )
-        self.year_combo.grid(row=1, column=1, sticky="ew", pady=5)
+        self.year_combo.grid(row=2, column=1, sticky="ew", pady=5)
         self.year_combo.bind('<<ComboboxSelected>>', self._on_year_change)
         
         # Set default to current year if available
@@ -229,26 +242,14 @@ class SaftReportingUI:
         
         # Month field - dropdown with periods from selected year (only for Monthly reports)
         self.month_label = ttk.Label(main_frame, text="Month:")
-        self.month_label.grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.month_label.grid(row=3, column=0, sticky=tk.W, pady=5)
         self.month_combo = ttk.Combobox(
             main_frame,
             textvariable=self.month_var,
             state="readonly",
             width=23
         )
-        self.month_combo.grid(row=2, column=1, sticky="ew", pady=5)
-        
-        # Report Type picklist
-        ttk.Label(main_frame, text="Report Type:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.report_type_combo = ttk.Combobox(
-            main_frame,
-            textvariable=self.report_type_var,
-            values=["Annual", "Monthly"],
-            state="readonly",
-            width=23
-        )
-        self.report_type_combo.grid(row=3, column=1, sticky="ew", pady=5)
-        self.report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
+        self.month_combo.grid(row=3, column=1, sticky="ew", pady=5)
         
         # Export to Excel checkbox
         self.export_excel_check = ttk.Checkbutton(
@@ -390,8 +391,8 @@ class SaftReportingUI:
                 'export_excel': self.export_excel_var.get()
             }
             
-            # Don't close - let main.py handle the UI
-            # Just trigger the event loop to continue
+            # Set flag to indicate selections are ready and exit mainloop
+            self.selections_ready = True
             self.root.quit()
     
     def get_selections(self):

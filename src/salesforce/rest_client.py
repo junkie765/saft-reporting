@@ -251,16 +251,22 @@ class SalesforceRestClient:
         
         # Build period filter for GL journal queries (period-based, not date-based)
         # Get period names for the range (year + period number, e.g., '2025/001', '2025/002')
+        # Valid periods: 000 (opening), 001-012 (monthly), 100 (year-end adjustments)
         period_names = []
         try:
             period_from_num = int(period_from)
             period_to_num = int(period_to)
+            
+            # Build list of periods in range, ensuring we only include valid periods
             for p in range(period_from_num, period_to_num + 1):
-                # Period names in Certinia are formatted as 'YYYY/NNN' (e.g., '2025/002')
-                period_names.append(f"{year}/{p:03d}")
+                # Only include valid periods: 000, 001-012, 100
+                if p == 0 or (1 <= p <= 12) or p == 100:
+                    period_names.append(f"{year}/{p:03d}")
         except ValueError:
-            # If not numeric, use as-is
-            period_names = [f"{year}/{period_from}", f"{year}/{period_to}"]
+            # If not numeric, use as-is (e.g., '000', '001', '100')
+            period_names = [f"{year}/{period_from}"]
+            if period_from != period_to:
+                period_names.append(f"{year}/{period_to}")
         
         logger.info(f"GL Journals: Filtering by periods {period_names}")
         logger.info(f"Other documents: Filtering by dates {start_str} to {end_str}")
@@ -600,6 +606,14 @@ class SalesforceRestClient:
                 if 'c2g__YearName__r' in record and record['c2g__YearName__r']:
                     year_name = record['c2g__YearName__r']['Name']
                     period_num = record.get('c2g__PeriodNumber__c', '')
+                    
+                    # Extract just the period number (e.g., '001' from '2024/001')
+                    if '/' in period_num:
+                        period_num = period_num.split('/')[-1]
+                    
+                    # Only include periods 000, 001-012, and 100
+                    if period_num not in ['000'] + [f'{i:03d}' for i in range(1, 13)] + ['100']:
+                        continue
                     
                     years_set.add(year_name)
                     

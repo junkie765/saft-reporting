@@ -188,10 +188,7 @@ def main():
     if not selections:
         sys.exit(0)
     
-    # Start progress bar
-    ui_app.start_progress()
-    
-    # Setup logging with file handler and UI handler
+    # Setup logging once (file handler and UI handler)
     setup_logger(args.log_level, use_console=False)
     logger = logging.getLogger(__name__)
     
@@ -202,110 +199,142 @@ def main():
     ui_handler.setFormatter(formatter)
     logging.getLogger().addHandler(ui_handler)
     
-    # Track overall execution time
-    total_start_time = time.time()
-    
-    logger.info("=" * 80)
-    logger.info("SAF-T Bulgaria Export - Certinia Finance Cloud")
-    logger.info("=" * 80)
-    
-    # Validate dates (still needed for XML generation)
-    start_date, end_date = validate_dates(selections['start_date'], selections['end_date'])
-    
-    # Format period display based on report type
-    period_display = f"{selections['period_from']}-{selections['period_to']}" if selections['report_type'] == "Annual" else selections['period_from']
-    
-    logger.info(f"UI selections: Company={selections['company']}, Year={selections['year']}, Period={period_display}, Type={selections['report_type']}")
-    logger.info(f"Date range (for display): {start_date.date()} to {end_date.date()}")
-    logger.info(f"Company filter: {selections['company']}")
-    
-    try:
-        # Step 1: Reuse authenticated REST client from UI (already authenticated)
-        logger.info("Step 1: Using cached Salesforce authentication from UI...")
-        step_start = time.time()
-        rest_client = ui_app.get_rest_client()
-        if not rest_client:
-            logger.error("No authenticated REST client available from UI")
-            raise Exception("Authentication failed - please check your Salesforce credentials")
-        step_duration = time.time() - step_start
-        logger.info(f"✓ Using cached authentication (took {step_duration:.2f}s)")
+    # Main loop to allow multiple report generations
+    while True:
+        # Wait for user to click Generate button
+        if not ui_app.selections_ready:
+            break
         
-        # Step 2: Extract data from Certinia
-        logger.info("Step 2: Extracting data from Certinia...")
-        logger.info(f"Note: GL Journals filtered by PERIOD ({selections['year']} periods {selections['period_from']}-{selections['period_to']})")
-        logger.info(f"Note: Other documents filtered by DOCUMENT DATE ({start_date.date()} to {end_date.date()})")
-        step_start = time.time()
-        certinia_data = rest_client.extract_certinia_data(selections['year'], selections['period_from'], selections['period_to'], start_date, end_date, selections['company'])
-        step_duration = time.time() - step_start
-        logger.info(f"✓ Data extraction complete (took {step_duration:.2f}s)")
+        # Start progress bar
+        ui_app.start_progress()
         
-        # Step 3: Transform data
-        logger.info("Step 3: Transforming data for SAF-T format...")
-        step_start = time.time()
-        # Update config with command-line dates for transformer
-        config['saft']['selection_start_date'] = start_date.strftime('%Y-%m-%d')
-        config['saft']['selection_end_date'] = end_date.strftime('%Y-%m-%d')
-        transformer = CertiniaTransformer(config)
-        saft_data = transformer.transform(certinia_data)
-        step_duration = time.time() - step_start
-        logger.info(f"✓ Data transformation complete (took {step_duration:.2f}s)")
+        # Track overall execution time
+        total_start_time = time.time()
         
-        # Step 4: Generate SAF-T XML
-        logger.info("Step 4: Generating SAF-T XML file...")
-        step_start = time.time()
-        generator = SAFTGenerator(config)
+        logger.info("=" * 80)
+        logger.info("SAF-T Bulgaria Export - Certinia Finance Cloud")
+        logger.info("=" * 80)
         
-        # Determine output path
-        if args.output:
-            output_path = Path(args.output)
-        else:
-            output_dir = Path(config['output']['directory'])
-            output_dir.mkdir(exist_ok=True)
-            output_path = output_dir / build_output_filename(config, start_date, end_date, 'xml')
+        # Validate dates (still needed for XML generation)
+        start_date, end_date = validate_dates(selections['start_date'], selections['end_date'])
         
-        generator.generate(saft_data, output_path, start_date, end_date)
-        step_duration = time.time() - step_start
-        logger.info(f"✓ SAF-T XML generated: {output_path} (took {step_duration:.2f}s)")
+        # Format period display based on report type
+        period_display = f"{selections['period_from']}-{selections['period_to']}" if selections['report_type'] == "Annual" else selections['period_from']
         
-        # Step 5: Export to Excel (if requested)
-        if selections.get('export_excel', False):
-            logger.info("Step 5: Exporting data to Excel...")
+        logger.info(f"UI selections: Company={selections['company']}, Year={selections['year']}, Period={period_display}, Type={selections['report_type']}")
+        logger.info(f"Date range (for display): {start_date.date()} to {end_date.date()}")
+        logger.info(f"Company filter: {selections['company']}")
+        
+        try:
+            # Step 1: Reuse authenticated REST client from UI (already authenticated)
+            logger.info("Step 1: Using cached Salesforce authentication from UI...")
             step_start = time.time()
-            excel_exporter = ExcelExporter()
-            output_dir = Path(config['output']['directory'])
-            excel_path = output_dir / build_output_filename(config, start_date, end_date, 'xlsx', 'Certinia_Data_')
-            
-            # Export both raw and transformed data
-            excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
+            rest_client = ui_app.get_rest_client()
+            if not rest_client:
+                logger.error("No authenticated REST client available from UI")
+                raise Exception("Authentication failed - please check your Salesforce credentials")
             step_duration = time.time() - step_start
-            logger.info(f"✓ Excel file generated: {excel_path} (took {step_duration:.2f}s)")
-        
-        # Calculate total execution time
-        total_duration = time.time() - total_start_time
-        minutes = int(total_duration // 60)
-        seconds = int(total_duration % 60)
-        
-        # Summary
-        logger.info("=" * 80)
-        logger.info("Export completed successfully!", extra={'level': 'SUCCESS'})
-        logger.info(f"SAF-T XML file: {output_path.absolute()}")
-        logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
-        logger.info(f"Total execution time: {total_duration:.2f}s ({minutes} minutes and {seconds} seconds)")
-        logger.info("=" * 80)
-        
-        # Stop progress, re-enable inputs, and keep window open
-        ui_app.stop_progress()
-        ui_app._enable_inputs()
-        ui_app.log("Process completed successfully. You can generate another report or close this window.", "SUCCESS")
-        ui_app.root.mainloop()
-        
-    except Exception as e:
-        logger.error(f"Error during export: {e}", exc_info=True)
-        ui_app.stop_progress()
-        ui_app._enable_inputs()
-        ui_app.log("Process failed. Check the log for details.", "ERROR")
-        ui_app.root.mainloop()
-        sys.exit(1)
+            logger.info(f"✓ Using cached authentication (took {step_duration:.2f}s)")
+            
+            # Step 2: Extract data from Certinia
+            logger.info("Step 2: Extracting data from Certinia...")
+            logger.info(f"Note: GL Journals filtered by PERIOD ({selections['year']} periods {selections['period_from']}-{selections['period_to']})")
+            logger.info(f"Note: Other documents filtered by DOCUMENT DATE ({start_date.date()} to {end_date.date()})")
+            step_start = time.time()
+            certinia_data = rest_client.extract_certinia_data(selections['year'], selections['period_from'], selections['period_to'], start_date, end_date, selections['company'])
+            step_duration = time.time() - step_start
+            logger.info(f"✓ Data extraction complete (took {step_duration:.2f}s)")
+            
+            # Step 3: Transform data
+            logger.info("Step 3: Transforming data for SAF-T format...")
+            step_start = time.time()
+            # Update config with command-line dates for transformer
+            config['saft']['selection_start_date'] = start_date.strftime('%Y-%m-%d')
+            config['saft']['selection_end_date'] = end_date.strftime('%Y-%m-%d')
+            transformer = CertiniaTransformer(config)
+            saft_data = transformer.transform(certinia_data)
+            step_duration = time.time() - step_start
+            logger.info(f"✓ Data transformation complete (took {step_duration:.2f}s)")
+            
+            # Step 4: Generate SAF-T XML
+            logger.info("Step 4: Generating SAF-T XML file...")
+            step_start = time.time()
+            generator = SAFTGenerator(config)
+            
+            # Determine output path
+            if args.output:
+                output_path = Path(args.output)
+            else:
+                output_dir = Path(config['output']['directory'])
+                output_dir.mkdir(exist_ok=True)
+                output_path = output_dir / build_output_filename(config, start_date, end_date, 'xml')
+            
+            generator.generate(saft_data, output_path, start_date, end_date)
+            step_duration = time.time() - step_start
+            logger.info(f"✓ SAF-T XML generated: {output_path} (took {step_duration:.2f}s)")
+            
+            # Step 5: Export to Excel (if requested)
+            if selections.get('export_excel', False):
+                logger.info("Step 5: Exporting data to Excel...")
+                step_start = time.time()
+                excel_exporter = ExcelExporter()
+                output_dir = Path(config['output']['directory'])
+                excel_path = output_dir / build_output_filename(config, start_date, end_date, 'xlsx', 'Certinia_Data_')
+                
+                # Export both raw and transformed data
+                excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
+                step_duration = time.time() - step_start
+                logger.info(f"✓ Excel file generated: {excel_path} (took {step_duration:.2f}s)")
+            
+            # Calculate total execution time
+            total_duration = time.time() - total_start_time
+            minutes = int(total_duration // 60)
+            seconds = int(total_duration % 60)
+            
+            # Summary
+            logger.info("=" * 80)
+            logger.info("Export completed successfully!", extra={'level': 'SUCCESS'})
+            logger.info(f"SAF-T XML file: {output_path.absolute()}")
+            logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
+            logger.info(f"Total execution time: {total_duration:.2f}s ({minutes} minutes and {seconds} seconds)")
+            logger.info("=" * 80)
+            
+            # Stop progress, re-enable inputs, and reset flag for next report
+            ui_app.stop_progress()
+            ui_app._enable_inputs()
+            ui_app.selections_ready = False
+            ui_app.log("Process completed successfully. You can generate another report or close this window.", "SUCCESS")
+            
+            # Wait for next report generation
+            ui_app.root.mainloop()
+            
+            # Check if user clicked Generate again or closed window
+            if not ui_app.selections_ready:
+                break
+            
+            # Get new selections
+            selections = ui_app.get_selections()
+            if not selections:
+                break
+            
+        except Exception as e:
+            logger.error(f"Error during export: {e}", exc_info=True)
+            ui_app.stop_progress()
+            ui_app._enable_inputs()
+            ui_app.selections_ready = False
+            ui_app.log("Process failed. Check the log for details.", "ERROR")
+            
+            # Wait for next report generation
+            ui_app.root.mainloop()
+            
+            # Check if user clicked Generate again or closed window
+            if not ui_app.selections_ready:
+                break
+            
+            # Get new selections for retry
+            selections = ui_app.get_selections()
+            if not selections:
+                break
 
 
 if __name__ == '__main__':
