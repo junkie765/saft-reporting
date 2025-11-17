@@ -45,7 +45,7 @@ class ExcelExporter:
     
     def _prepare_dataframe(self, records: List[dict], sheet_name: str) -> pd.DataFrame:
         """
-        Prepare DataFrame from list of records
+        Prepare DataFrame from list of records with memory-efficient processing
         
         Args:
             records: List of record dictionaries
@@ -58,11 +58,20 @@ class ExcelExporter:
             logger.warning(f"No data for sheet: {sheet_name}")
             return pd.DataFrame()
         
-        # Flatten all records
-        flattened = [self._flatten_record(record) for record in records]
-        
-        # Create DataFrame
-        df = pd.DataFrame(flattened)
+        # Process in chunks if dataset is large (> 10,000 records)
+        chunk_size = 10000
+        if len(records) > chunk_size:
+            logger.info(f"Processing {len(records)} records in chunks for {sheet_name}...")
+            dfs = []
+            for i in range(0, len(records), chunk_size):
+                chunk = records[i:i + chunk_size]
+                flattened = [self._flatten_record(record) for record in chunk]
+                dfs.append(pd.DataFrame(flattened))
+            df = pd.concat(dfs, ignore_index=True)
+        else:
+            # Flatten all records
+            flattened = [self._flatten_record(record) for record in records]
+            df = pd.DataFrame(flattened)
         
         logger.info(f"Prepared {len(df)} rows for sheet: {sheet_name}")
         return df

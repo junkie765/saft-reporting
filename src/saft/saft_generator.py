@@ -42,26 +42,32 @@ class SAFTGenerator:
         return elem
     
     def _add_address(self, parent: ET.Element, address: Dict, address_type: str = "StreetAddress"):
-        """Add Address element with standard structure"""
+        """Add Address element with standard structure and validation"""
+        if not isinstance(address, dict):
+            address = {}
+        
         addr_elem = self._elem(parent, "Address")
-        self._elem(addr_elem, "StreetName", address.get('street_name', address.get('street', '')))
+        self._elem(addr_elem, "StreetName", str(address.get('street_name', address.get('street', ''))))
         self._elem(addr_elem, "Number", "")
         self._elem(addr_elem, "AdditionalAddressDetail", "")
         self._elem(addr_elem, "Building", "")
-        self._elem(addr_elem, "City", address.get('city', ''))
-        self._elem(addr_elem, "PostalCode", address.get('postal_code', ''))
-        self._elem(addr_elem, "Region", address.get('region', address.get('state_province', '')))
-        self._elem(addr_elem, "Country", address.get('country', 'BG'))
+        self._elem(addr_elem, "City", str(address.get('city', '')))
+        self._elem(addr_elem, "PostalCode", str(address.get('postal_code', '')))
+        self._elem(addr_elem, "Region", str(address.get('region', address.get('state_province', ''))))
+        self._elem(addr_elem, "Country", str(address.get('country', 'BG')))
         self._elem(addr_elem, "AddressType", address_type)
         return addr_elem
     
     def _add_contact(self, parent: ET.Element, contact: Dict):
-        """Add Contact element with standard structure"""
+        """Add Contact element with standard structure and validation"""
+        if not isinstance(contact, dict):
+            contact = {}
+        
         contact_elem = self._elem(parent, "Contact")
-        self._elem(contact_elem, "Telephone", contact.get('telephone', ''))
-        self._elem(contact_elem, "Fax", contact.get('fax', ''))
-        self._elem(contact_elem, "Email", contact.get('email', ''))
-        self._elem(contact_elem, "Website", contact.get('website', ''))
+        self._elem(contact_elem, "Telephone", str(contact.get('telephone', '')))
+        self._elem(contact_elem, "Fax", str(contact.get('fax', '')))
+        self._elem(contact_elem, "Email", str(contact.get('email', '')))
+        self._elem(contact_elem, "Website", str(contact.get('website', '')))
         return contact_elem
     
     def _add_company_name(self, parent: ET.Element, name: str):
@@ -73,7 +79,16 @@ class SAFTGenerator:
     
     def _add_balance(self, parent: ET.Element, opening_debit: float, opening_credit: float, 
                      closing_debit: float, closing_credit: float):
-        """Add balance elements following same-side rule (closing determines side)"""
+        """Add balance elements following same-side rule (closing determines side)
+        
+        Validates and formats balance values to ensure they are non-negative.
+        """
+        # Ensure all values are non-negative
+        opening_debit = abs(opening_debit) if opening_debit else 0.0
+        opening_credit = abs(opening_credit) if opening_credit else 0.0
+        closing_debit = abs(closing_debit) if closing_debit else 0.0
+        closing_credit = abs(closing_credit) if closing_credit else 0.0
+        
         if closing_credit > 0:
             self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
             self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
@@ -296,8 +311,14 @@ class SAFTGenerator:
         gl_entries_elem = self._elem(root, "GeneralLedgerEntries")
         self._elem(gl_entries_elem, "NumberOfEntries", str(len(entries)))
         
+        # Calculate totals with validation
         total_debit = sum(sum(line['debit_amount'] for line in entry['lines']) for entry in entries)
         total_credit = sum(sum(line['credit_amount'] for line in entry['lines']) for entry in entries)
+        
+        # Log totals and check balance
+        logger.info(f"GL Entries totals: Debit={total_debit:.2f}, Credit={total_credit:.2f}, Difference={abs(total_debit - total_credit):.2f}")
+        if abs(total_debit - total_credit) > 0.01:
+            logger.warning(f"GL Entries not balanced: Debit {total_debit:.2f} != Credit {total_credit:.2f}")
         
         self._elem(gl_entries_elem, "TotalDebit", f"{total_debit:.2f}")
         self._elem(gl_entries_elem, "TotalCredit", f"{total_credit:.2f}")

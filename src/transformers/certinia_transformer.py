@@ -18,6 +18,7 @@ class CertiniaTransformer:
             config: Configuration dictionary
         """
         self.config = config
+        self._period_info_cache = None  # Cache period info to avoid recalculation
     
     def transform(self, certinia_data: Dict[str, List]) -> Dict[str, Any]:
         """
@@ -119,12 +120,15 @@ class CertiniaTransformer:
         }
     
     def _get_period_info(self) -> Dict[str, Any]:
-        """Get period information from config
+        """Get period information from config (with caching)
         
         For balance calculations:
         - start_period: Used for opening balance calculation (transactions < start_period)
         - end_period: Used for closing balance calculation (transactions <= end_period)
         """
+        if self._period_info_cache is not None:
+            return self._period_info_cache
+        
         period_start_date = self.config['saft']['selection_start_date']
         period_end_date = self.config['saft']['selection_end_date']
         
@@ -132,7 +136,7 @@ class CertiniaTransformer:
         end_dt = datetime.strptime(period_end_date, '%Y-%m-%d')
         previous_period_end = (start_dt - timedelta(days=1)).strftime('%Y-%m-%d')
         
-        return {
+        self._period_info_cache = {
             'period': end_dt.month,  # End period for closing balance
             'period_year': end_dt.year,  # End period year for closing balance
             'start_period': start_dt.month,  # Start period for opening balance
@@ -142,6 +146,7 @@ class CertiniaTransformer:
             'period_end_date': period_end_date,
             'previous_period_end': previous_period_end
         }
+        return self._period_info_cache
     
     def _get_transaction_date(self, line: Dict) -> str:
         """Extract transaction date from nested structure"""
@@ -166,10 +171,15 @@ class CertiniaTransformer:
         return ''
     
     def _get_net_value(self, line: Dict) -> float:
-        """Extract net value from transaction line"""
+        """Extract net value from transaction line
+        
+        Prioritizes c2g__HomeValue__c if available, otherwise calculates from debits/credits.
+        Returns positive for debits, negative for credits.
+        """
         home_value = line.get('c2g__HomeValue__c')
-        if home_value is not None:
+        if home_value is not None and home_value != '':
             return self._parse_decimal(home_value)
+        # Fallback: calculate from debits and credits
         debit = self._parse_decimal(line.get('c2g__HomeDebits__c', 0))
         credit = self._parse_decimal(line.get('c2g__HomeCredits__c', 0))
         return debit - credit
@@ -242,10 +252,14 @@ class CertiniaTransformer:
         Returns:
             Dictionary mapping account IDs to their opening/closing debit/credit balances
         """
+        if not transaction_lines:
+            logger.warning(f"No transaction lines provided for balance calculation on field {group_by_field}")
+            return {}
+        
         period_info = self._get_period_info()
         start_period_number = f"{period_info['start_period_year']}{period_info['start_period']:03d}"
         end_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
-        logger.info(f"Calculating balances: Opening before period {start_period_number}, Closing through period {end_period_number}")
+        logger.info(f"Calculating balances for {group_by_field}: Opening before period {start_period_number}, Closing through period {end_period_number}")
         logger.info(f"Processing {len(transaction_lines)} transaction lines")
         
         # Separate debit and credit accumulators
@@ -254,9 +268,16 @@ class CertiniaTransformer:
         closing_debits = {}   # Sum of positive values through END period
         closing_credits = {}  # Sum of abs(negative values) through END period
         
+        # Track statistics for validation
+        skipped_no_account = 0
+        skipped_no_period = 0
+        processed_opening = 0
+        processed_closing = 0
+        
         for line in transaction_lines:
             account_id = line.get(group_by_field)
             if not account_id:
+                skipped_no_account += 1
                 continue
             
             net_value = self._get_net_value(line)
@@ -264,6 +285,7 @@ class CertiniaTransformer:
             
             # Skip transactions without period assignment
             if not period_number:
+                skipped_no_period += 1
                 continue
             
             # Accumulate OPENING balances (transactions BEFORE start period)
@@ -275,6 +297,7 @@ class CertiniaTransformer:
                 elif net_value < 0:
                     # Negative value = Credit (store as absolute value)
                     opening_credits[account_id] = opening_credits.get(account_id, 0.0) + abs(net_value)
+                processed_opening += 1
             
             # Accumulate CLOSING balances (transactions THROUGH end period)
             # PeriodYearPeriodNumber <= end_period_number (e.g., all 2024 periods <= 2024012)
@@ -285,6 +308,25 @@ class CertiniaTransformer:
                 elif net_value < 0:
                     # Negative value = Credit (store as absolute value)
                     closing_credits[account_id] = closing_credits.get(account_id, 0.0) + abs(net_value)
+                processed_closing += 1
+        
+        # Log statistics for validation
+        all_accounts = opening_debits.keys() | opening_credits.keys() | closing_debits.keys() | closing_credits.keys()
+        logger.info(f"Balance calculation complete: {len(all_accounts)} accounts")
+        logger.info(f"  Processed: {processed_opening} opening transactions, {processed_closing} closing transactions")
+        logger.info(f"  Total transaction lines analyzed: {len(transaction_lines)}")
+        if skipped_no_account > 0:
+            logger.warning(f"  Skipped {skipped_no_account} transactions with no account ID")
+        if skipped_no_period > 0:
+            logger.warning(f"  Skipped {skipped_no_period} transactions with no period number")
+        
+        # Log sample totals for validation
+        total_opening_dr = sum(opening_debits.values())
+        total_opening_cr = sum(opening_credits.values())
+        total_closing_dr = sum(closing_debits.values())
+        total_closing_cr = sum(closing_credits.values())
+        logger.info(f"  Opening balances: Debit {total_opening_dr:,.2f}, Credit {total_opening_cr:,.2f}, Net {total_opening_dr - total_opening_cr:,.2f}")
+        logger.info(f"  Closing balances: Debit {total_closing_dr:,.2f}, Credit {total_closing_cr:,.2f}, Net {total_closing_dr - total_closing_cr:,.2f}")
         
         # Convert to final balance structure with same-side rule
         return self._convert_debit_credit_to_net_position(opening_debits, opening_credits, 
@@ -800,8 +842,15 @@ class CertiniaTransformer:
         ]
     
     def _parse_decimal(self, value: Any) -> float:
-        """Parse decimal value safely"""
+        """Parse decimal value safely with validation"""
+        if value is None or value == '':
+            return 0.0
         try:
-            return float(value) if value else 0.0
-        except (ValueError, TypeError):
+            result = float(value)
+            # Validate result is a valid number (not NaN or Inf)
+            if not (-1e15 < result < 1e15):
+                logger.warning(f"Unusual decimal value detected: {value} -> {result}")
+            return result
+        except (ValueError, TypeError) as e:
+            logger.debug(f"Failed to parse decimal value '{value}': {e}")
             return 0.0

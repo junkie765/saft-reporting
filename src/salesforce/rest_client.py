@@ -1,6 +1,6 @@
 """Salesforce REST API client"""
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Set
 import requests
 
@@ -79,15 +79,19 @@ class SalesforceRestClient:
             logger.error(f"Error querying {record_type}: {e}")
             raise
     
-    def extract_certinia_data(self, start_date: datetime, end_date: datetime, 
+    def extract_certinia_data(self, year: str, period_from: str, period_to: str,
+                            start_date: datetime, end_date: datetime,
                             company_filter: str | None = None, 
                             sections: Set[str] | None = None) -> Dict[str, List]:
         """
         Extract Certinia data for SAF-T reporting
         
         Args:
-            start_date: Start date for extraction
-            end_date: End date for extraction
+            year: Year for extraction (e.g., '2024')
+            period_from: Starting period number (e.g., '1', '2', etc.)
+            period_to: Ending period number (e.g., '12')
+            start_date: Period start date (for non-GL queries and balance calculations)
+            end_date: Period end date (for non-GL queries and balance calculations)
             company_filter: Optional company name to filter data
             sections: Set of sections to extract. If None, extracts all.
                      Options: 'gl', 'customers', 'suppliers', 'sales_invoices', 'purchase_invoices', 'payments'
@@ -102,9 +106,25 @@ class SalesforceRestClient:
         data = {}
         objects_config = self.config['certinia']['objects']
         
-        # Format dates for SOQL
+        # Format dates for SOQL (used for invoices, payments, and balance calculations)
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
+        
+        # Build period filter for GL journal queries (period-based, not date-based)
+        # Get period names for the range (year + period number, e.g., '2025/001', '2025/002')
+        period_names = []
+        try:
+            period_from_num = int(period_from)
+            period_to_num = int(period_to)
+            for p in range(period_from_num, period_to_num + 1):
+                # Period names in Certinia are formatted as 'YYYY/NNN' (e.g., '2025/002')
+                period_names.append(f"{year}/{p:03d}")
+        except ValueError:
+            # If not numeric, use as-is
+            period_names = [f"{year}/{period_from}", f"{year}/{period_to}"]
+        
+        logger.info(f"GL Journals: Filtering by periods {period_names}")
+        logger.info(f"Other documents: Filtering by dates {start_str} to {end_str}")
         
         # Get company ID if filter is specified
         company_id = None
@@ -128,30 +148,32 @@ class SalesforceRestClient:
             else:
                 logger.warning(f"Company '{company_filter}' not found, proceeding without filter")
         
-        # Build company filter clause for queries
-        company_filter_clause = f"AND c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
+        # Build company filter clause for queries (validate company_id is valid)
+        company_filter_clause = f"AND c2g__OwnerCompany__c = '{company_id}'" if company_id and isinstance(company_id, str) else ""
         
         # Extract Journal Entries (GL entries)
         if 'gl' in sections:
             logger.info("Extracting general ledger journal entries...")
+            # Build IN clause for period names
+            period_in_clause = "('" + "', '".join(period_names) + "')"
             journal_query = f"""
                 SELECT Id, Name, c2g__JournalDate__c, c2g__Type__c, 
-                       c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name
+                       c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name,
+                       c2g__Period__r.c2g__PeriodNumber__c
                 FROM {objects_config['journal_entry']}
-                WHERE c2g__JournalDate__c >= {start_str} 
-                  AND c2g__JournalDate__c <= {end_str}
+                WHERE c2g__Period__r.Name IN {period_in_clause}
                   AND c2g__JournalStatus__c = 'Complete'
                   {company_filter_clause}
             """
             data['journals'] = self.query_rest(journal_query, "journal entries")
+            logger.info(f"Found {len(data['journals'])} journals with periods: {[j.get('c2g__Period__r', {}).get('Name') for j in data['journals'][:5]]}")
             
             line_query = f"""
                 SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
                        c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
                        c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
                 FROM {objects_config['journal_line']}
-                WHERE c2g__Journal__r.c2g__JournalDate__c >= {start_str}
-                  AND c2g__Journal__r.c2g__JournalDate__c <= {end_str}
+                WHERE c2g__Journal__r.c2g__Period__r.Name IN {period_in_clause}
                   {company_filter_clause}
             """
             data['journal_lines'] = self.query_rest(line_query, "journal lines")
@@ -225,10 +247,22 @@ class SalesforceRestClient:
             data['payments'] = []
             data['payment_lines'] = []
         
-        # Extract Transaction Line Items for balance calculations - fetch ALL historical data
+        # Extract Transaction Line Items for balance calculations - fetch ALL historical data up to period end
         # Include period information for proper opening/closing balance calculation
         logger.info("Extracting transaction lines for balance calculations...")
-        company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id else ""
+        company_filter_sql = f"c2g__Transaction__r.c2g__OwnerCompany__c = '{company_id}' AND " if company_id and isinstance(company_id, str) else ""
+        
+        # Fetch transaction lines from beginning of company operations through end date + buffer
+        # For accurate opening balance calculation, we need ALL historical transactions
+        # IMPORTANT: Add 3-month buffer after period end to capture transactions that have later
+        # transaction dates but are assigned to the selected period (accrual accounting)
+        start_date_filter = datetime(2020, 1, 1).strftime('%Y-%m-%d')
+        # Add 3 months buffer to end date to catch late-dated transactions assigned to period
+        end_date_with_buffer = (datetime.strptime(end_str, '%Y-%m-%d') + timedelta(days=90)).strftime('%Y-%m-%d')
+        logger.info(f"Transaction lines: Fetching from {start_date_filter} through {end_date_with_buffer} (period end + 3 months buffer)")
+        logger.info(f"Note: Extended date range to capture transactions with later transaction dates assigned to period {year}/{int(period_to):03d}")
+        logger.info(f"Note: This may take a while for large datasets...")
+        
         transaction_line_query = f"""
             SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
                    c2g__HomeCredits__c, c2g__HomeDebits__c,
@@ -237,12 +271,18 @@ class SalesforceRestClient:
                    c2g__Transaction__r.c2g__Period__r.c2g__PeriodNumber__c,
                    c2g__Transaction__r.c2g__Period__r.c2g__YearName__c
             FROM c2g__codaTransactionLineItem__c
-            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c <= {end_str}
+            WHERE {company_filter_sql}c2g__Transaction__r.c2g__TransactionDate__c >= {start_date_filter}
+                  AND c2g__Transaction__r.c2g__TransactionDate__c <= {end_date_with_buffer}
+                  AND c2g__Transaction__r.c2g__Period__r.Name != null
                   AND c2g__HomeCurrency__r.Name = 'BGN'
         """
         
         result = self.sf_session.query_all(transaction_line_query)
-        transaction_lines = result['records']
+        transaction_lines = result.get('records', [])
+        logger.info(f"Retrieved {len(transaction_lines)} transaction line items for balance calculations")
+        if transaction_lines:
+            sample_periods = [tl.get('c2g__Transaction__r', {}).get('c2g__Period__r', {}).get('Name') for tl in transaction_lines[:5]]
+            logger.info(f"Sample transaction periods: {sample_periods}")
         
         # Remove Salesforce metadata attributes
         for record in transaction_lines:
@@ -307,7 +347,7 @@ class SalesforceRestClient:
             SELECT Id, Name, c2g__Description__c,
                    (SELECT c2g__Rate__c, c2g__StartDate__c 
                     FROM c2g__TaxRates__r 
-                    WHERE c2g__StartDate__c <= {end_date.strftime('%Y-%m-%d')}
+                    WHERE c2g__StartDate__c <= {end_str}
                     ORDER BY c2g__StartDate__c DESC
                     LIMIT 1)
             FROM c2g__codaTaxCode__c

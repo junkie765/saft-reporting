@@ -18,7 +18,7 @@ from src.utils.excel_exporter import ExcelExporter
 
 def load_config(config_path: str = 'config.json') -> dict:
     """
-    Load configuration from JSON file
+    Load configuration from JSON file with validation
     
     Args:
         config_path: Path to configuration file (default: config.json)
@@ -31,7 +31,16 @@ def load_config(config_path: str = 'config.json') -> dict:
     """
     try:
         with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            config = json.load(f)
+        
+        # Validate required config sections
+        required_sections = ['salesforce', 'saft', 'certinia', 'output']
+        missing_sections = [s for s in required_sections if s not in config]
+        if missing_sections:
+            logging.error(f"Missing required config sections: {', '.join(missing_sections)}")
+            sys.exit(1)
+        
+        return config
     except FileNotFoundError:
         logging.error(f"Configuration file not found: {config_path}")
         logging.error("Please copy config.example.json to config.json and update with your settings")
@@ -87,17 +96,26 @@ def validate_dates(start_date: str, end_date: str) -> tuple:
     Raises:
         SystemExit: If dates are invalid or in wrong format
     """
+    if not start_date or not end_date:
+        logging.error("Start date and end date are required")
+        sys.exit(1)
+    
     try:
         start = datetime.strptime(start_date, '%Y-%m-%d')
         end = datetime.strptime(end_date, '%Y-%m-%d')
         
         if start > end:
-            raise ValueError("Start date must be before end date")
+            raise ValueError(f"Start date ({start_date}) must be before end date ({end_date})")
+        
+        # Warn if date range is very large (> 5 years)
+        days_diff = (end - start).days
+        if days_diff > 1825:  # ~5 years
+            logging.warning(f"Large date range detected: {days_diff} days. This may take a while to process.")
         
         return start, end
     except ValueError as e:
-        logging.error(f"Invalid date format: {e}")
-        logging.error("Please use YYYY-MM-DD format")
+        logging.error(f"Invalid date: {e}")
+        logging.error(f"Please use YYYY-MM-DD format. Got: start={start_date}, end={end_date}")
         sys.exit(1)
 
 
@@ -163,39 +181,40 @@ def main():
     start_date_str = selections['start_date']
     end_date_str = selections['end_date']
     company_name = selections['company']
+    year = selections['year']
+    period_from = selections['period_from']
+    period_to = selections['period_to']
     
-    logger.info(f"UI selections: Company={company_name}, Period={selections['period_from']}-{selections['period_to']}")
+    logger.info(f"UI selections: Company={company_name}, Year={year}, Period={period_from}-{period_to}")
     
-    # Validate dates
+    # Validate dates (still needed for XML generation)
     start_date, end_date = validate_dates(start_date_str, end_date_str)
-    logger.info(f"Data extraction period: {start_date.date()} to {end_date.date()}")
+    logger.info(f"Period range: {year} Period {period_from} to {period_to}")
+    logger.info(f"Date range (for display): {start_date.date()} to {end_date.date()}")
     logger.info(f"Company filter: {company_name}")
     
     try:
-        # Step 1: Authenticate with Salesforce
-        logger.info("Step 1: Authenticating with Salesforce...")
+        # Step 1: Reuse authenticated REST client from UI (already authenticated)
+        logger.info("Step 1: Using cached Salesforce authentication from UI...")
         step_start = time.time()
-        auth = SalesforceAuth(config['salesforce'])
-        sf_session = auth.authenticate()
+        rest_client = ui_app.get_rest_client()
+        if not rest_client:
+            logger.error("No authenticated REST client available from UI")
+            raise Exception("Authentication failed - please check your Salesforce credentials")
         step_duration = time.time() - step_start
-        logger.info(f"✓ Authentication successful (took {step_duration:.2f}s)")
+        logger.info(f"✓ Using cached authentication (took {step_duration:.2f}s)")
         
-        # Step 2: Initialize REST API client
-        logger.info("Step 2: Initializing REST API client...")
+        # Step 2: Extract data from Certinia
+        logger.info("Step 2: Extracting data from Certinia...")
+        logger.info(f"Note: GL Journals filtered by PERIOD ({year} periods {period_from}-{period_to})")
+        logger.info(f"Note: Other documents filtered by DOCUMENT DATE ({start_date.date()} to {end_date.date()})")
         step_start = time.time()
-        rest_client = SalesforceRestClient(sf_session, config)
-        step_duration = time.time() - step_start
-        logger.info(f"✓ REST API client ready (took {step_duration:.2f}s)")
-        
-        # Step 3: Extract data from Certinia
-        logger.info("Step 3: Extracting data from Certinia...")
-        step_start = time.time()
-        certinia_data = rest_client.extract_certinia_data(start_date, end_date, company_name)
+        certinia_data = rest_client.extract_certinia_data(year, period_from, period_to, start_date, end_date, company_name)
         step_duration = time.time() - step_start
         logger.info(f"✓ Data extraction complete (took {step_duration:.2f}s)")
         
-        # Step 4: Transform data
-        logger.info("Step 4: Transforming data for SAF-T format...")
+        # Step 3: Transform data
+        logger.info("Step 3: Transforming data for SAF-T format...")
         step_start = time.time()
         # Update config with command-line dates for transformer
         config['saft']['selection_start_date'] = start_date.strftime('%Y-%m-%d')
@@ -205,8 +224,8 @@ def main():
         step_duration = time.time() - step_start
         logger.info(f"✓ Data transformation complete (took {step_duration:.2f}s)")
         
-        # Step 5: Generate SAF-T XML
-        logger.info("Step 5: Generating SAF-T XML file...")
+        # Step 4: Generate SAF-T XML
+        logger.info("Step 4: Generating SAF-T XML file...")
         step_start = time.time()
         generator = SAFTGenerator(config)
         
@@ -230,9 +249,9 @@ def main():
         step_duration = time.time() - step_start
         logger.info(f"✓ SAF-T XML generated: {output_path} (took {step_duration:.2f}s)")
         
-        # Step 6: Export to Excel (if requested)
+        # Step 5: Export to Excel (if requested)
         if selections.get('export_excel', False):
-            logger.info("Step 6: Exporting data to Excel...")
+            logger.info("Step 5: Exporting data to Excel...")
             step_start = time.time()
             excel_exporter = ExcelExporter()
             

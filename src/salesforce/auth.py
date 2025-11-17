@@ -8,6 +8,9 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+# Global authentication cache to avoid multiple authentications
+_auth_cache = {}
+
 
 class SalesforceAuth:
     """Handle Salesforce authentication"""
@@ -287,18 +290,35 @@ class SalesforceAuth:
         return None
 
 
-def get_authenticated_client(config: dict):
+def get_authenticated_client(config: dict, force_new=False):
     """
     Helper function to get an authenticated Salesforce REST client
+    Uses cached authentication to avoid multiple auth calls
     
     Args:
         config: Configuration dictionary containing Salesforce settings
+        force_new: Force new authentication even if cached session exists
         
     Returns:
         SalesforceRestClient: Authenticated REST client instance
     """
     from .rest_client import SalesforceRestClient
     
-    auth = SalesforceAuth(config['salesforce'])
-    sf_session = auth.authenticate()
-    return SalesforceRestClient(sf_session, config)
+    # Create cache key from config
+    cache_key = (
+        config['salesforce'].get('username', ''),
+        config['salesforce'].get('instance_url', ''),
+        config['salesforce'].get('domain', '')
+    )
+    
+    # Check if we have a cached auth instance
+    if not force_new and cache_key in _auth_cache:
+        auth = _auth_cache[cache_key]
+        logger.debug("Using cached authentication session")
+    else:
+        auth = SalesforceAuth(config['salesforce'])
+        sf_session = auth.authenticate()
+        _auth_cache[cache_key] = auth
+        logger.debug("Created new authentication session")
+    
+    return SalesforceRestClient(auth.session, config)

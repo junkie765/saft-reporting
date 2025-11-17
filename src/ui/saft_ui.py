@@ -23,108 +23,6 @@ else:
 logger = logging.getLogger(__name__)
 
 
-class ProgressWindow:
-    """Progress window with log display for report generation"""
-    
-    def __init__(self, root):
-        self.root = root
-        self.root.title("SAFT Report Generation - Progress")
-        self.root.geometry("800x600")
-        self.root.resizable(True, True)
-        
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky="nsew")
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        
-        # Log text widget with scrollbar
-        log_frame = ttk.Frame(main_frame)
-        log_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(0, weight=1)
-        
-        scrollbar = ttk.Scrollbar(log_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.log_text = tk.Text(
-            log_frame,
-            wrap=tk.WORD,
-            yscrollcommand=scrollbar.set,
-            font=('Consolas', 9),
-            bg='#1e1e1e',
-            fg='#d4d4d4',
-            insertbackground='white'
-        )
-        self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.log_text.yview)
-        
-        # Progress bar
-        self.progress = ttk.Progressbar(main_frame, mode='indeterminate')
-        self.progress.grid(row=1, column=0, sticky="ew", pady=(0, 10))
-        
-        # Status label
-        self.status_label = ttk.Label(main_frame, text="Initializing...")
-        self.status_label.grid(row=2, column=0, sticky="w")
-        
-        # Close button (initially disabled)
-        self.close_btn = ttk.Button(
-            main_frame,
-            text="Close",
-            command=self.root.destroy,
-            state="disabled"
-        )
-        self.close_btn.grid(row=3, column=0, pady=(10, 0))
-        
-        self.is_complete = False
-        
-    def log(self, message, level="INFO"):
-        """Add log message to the text widget"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        color_tags = {
-            'INFO': 'info',
-            'WARNING': 'warning',
-            'ERROR': 'error',
-            'SUCCESS': 'success'
-        }
-        
-        # Configure tags if not already done
-        if not hasattr(self, '_tags_configured'):
-            self.log_text.tag_config('info', foreground='#4ec9b0')
-            self.log_text.tag_config('warning', foreground='#dcdcaa')
-            self.log_text.tag_config('error', foreground='#f48771')
-            self.log_text.tag_config('success', foreground='#b5cea8')
-            self._tags_configured = True
-        
-        formatted_message = f"[{timestamp}] {level}: {message}\n"
-        self.log_text.insert(tk.END, formatted_message, color_tags.get(level, 'info'))
-        self.log_text.see(tk.END)
-        self.root.update()
-        
-    def update_status(self, status):
-        """Update status label"""
-        self.status_label.config(text=status)
-        self.root.update()
-        
-    def start_progress(self):
-        """Start progress bar animation"""
-        self.progress.start(10)
-        
-    def stop_progress(self):
-        """Stop progress bar animation"""
-        self.progress.stop()
-        
-    def complete(self, success=True):
-        """Mark operation as complete"""
-        self.is_complete = True
-        self.stop_progress()
-        self.close_btn.config(state="normal")
-        if success:
-            self.update_status("✓ Report generation completed successfully!")
-        else:
-            self.update_status("✗ Report generation failed.")
-
-
 class SaftReportingUI:
     """Windows GUI application for SAFT reporting parameter selection"""
     
@@ -149,7 +47,21 @@ class SaftReportingUI:
         self.report_type_var = tk.StringVar(value="Monthly")
         self.export_excel_var = tk.BooleanVar(value=True)
         
-        # Fetch data from Salesforce
+        # Authenticate once and cache the REST client
+        self.rest_client = None
+        try:
+            self.rest_client = get_authenticated_client(self.config)
+            logger.debug("UI: Authenticated with Salesforce")
+        except Exception as e:
+            logger.error(f"Error authenticating with Salesforce: {e}")
+            error_msg = str(e)
+            if "401" in error_msg or "Unauthorized" in error_msg:
+                messagebox.showerror(
+                    "Authentication Error",
+                    "Salesforce session has expired.\n\nPlease update the session_id in config.json with a fresh token.\n\nSee OAUTH_SETUP.md for instructions."
+                )
+        
+        # Fetch data from Salesforce using cached client
         self.companies = self._fetch_companies()
         self.years, self.periods_by_year = self._fetch_periods_from_salesforce()
         self.available_periods = []
@@ -168,27 +80,24 @@ class SaftReportingUI:
     
     def _fetch_companies(self):
         """Fetch accounting companies from Salesforce"""
+        if not self.rest_client:
+            return []
         try:
-            rest_client = get_authenticated_client(self.config)
-            return rest_client.get_companies()
+            return self.rest_client.get_companies()
         except Exception as e:
             logger.error(f"Error fetching companies from Salesforce: {e}")
-            error_msg = str(e)
-            if "401" in error_msg or "Unauthorized" in error_msg:
-                messagebox.showerror(
-                    "Authentication Error",
-                    "Salesforce session has expired.\n\nPlease update the session_id in config.json with a fresh token.\n\nSee OAUTH_SETUP.md for instructions."
-                )
             return []
     
     def _fetch_periods_from_salesforce(self, company_id=None):
         """Fetch years and periods from Salesforce c2g__codaPeriod__c object"""
+        if not self.rest_client:
+            # Fallback to current year and 1-12 periods
+            current_year = str(datetime.now().year)
+            return [current_year], {current_year: [{'number': str(i), 'name': str(i)} for i in range(1, 13)]}
+        
         try:
-            # Get authenticated REST client
-            rest_client = get_authenticated_client(self.config)
-            
             # Fetch periods organized by year, filtered by company if provided
-            return rest_client.get_periods_by_year(company_id)
+            return self.rest_client.get_periods_by_year(company_id)
             
         except Exception as e:
             logger.error(f"Error fetching periods from Salesforce: {e}")
@@ -216,21 +125,41 @@ class SaftReportingUI:
         # Fetch periods for selected company
         self.years, self.periods_by_year = self._fetch_periods_from_salesforce(company_id)
         
-        # Update year dropdown
+        # Update year dropdown and set default
         self.year_combo['values'] = self.years
         if self.years:
             current_year = str(datetime.now().year)
-            if current_year in self.years:
-                self.year_combo.set(current_year)
-            else:
-                self.year_combo.set(self.years[-1])
+            self.year_combo.set(current_year if current_year in self.years else self.years[-1])
+            self._on_year_change()
+    
+    def _on_period_from_change(self, event=None):
+        """Auto-populate Period To when Period From is selected"""
+        period_from = self.period_from_var.get()
+        if period_from:
+            self.period_to_var.set(period_from)
+    
+    def _on_report_type_change(self, event=None):
+        """Update period defaults when report type is changed"""
+        report_type = self.report_type_var.get()
         
-        # Trigger year change to update periods
-        self._on_year_change()
+        if report_type == "Annual":
+            # Disable period fields for Annual reports
+            self.period_from_combo.config(state="disabled")
+            self.period_to_combo.config(state="disabled")
+            # Set to full year (001 to 012)
+            self.period_from_var.set("001")
+            self.period_to_var.set("012")
+        else:
+            # Enable period fields for Monthly reports
+            self.period_from_combo.config(state="readonly")
+            self.period_to_combo.config(state="readonly")
+            # Update with appropriate defaults
+            self._on_year_change()
     
     def _on_year_change(self, event=None):
         """Update period dropdowns when year is changed"""
         selected_year = self.year_var.get()
+        report_type = self.report_type_var.get()
         
         if selected_year in self.periods_by_year:
             self.available_periods = self.periods_by_year[selected_year]
@@ -238,13 +167,45 @@ class SaftReportingUI:
             
             # Update Period From dropdown
             self.period_from_combo['values'] = period_numbers
-            if period_numbers:
-                self.period_from_combo.set(period_numbers[0])
             
             # Update Period To dropdown
             self.period_to_combo['values'] = period_numbers
+            
+            # Set default periods based on report type
             if period_numbers:
-                self.period_to_combo.set(period_numbers[-1])
+                if report_type == "Annual":
+                    # For annual reports, always set to full year and disable
+                    # Use first and last available periods (typically '001' and '012')
+                    self.period_from_var.set(period_numbers[0])
+                    self.period_to_var.set(period_numbers[-1])
+                    self.period_from_combo.config(state="disabled")
+                    self.period_to_combo.config(state="disabled")
+                elif report_type == "Monthly":
+                    # Enable fields for monthly reports
+                    self.period_from_combo.config(state="readonly")
+                    self.period_to_combo.config(state="readonly")
+                    
+                    current_year = str(datetime.now().year)
+                    current_month = datetime.now().month
+                    
+                    if selected_year == current_year:
+                        # For monthly reports in current year, default to previous month
+                        previous_month = current_month - 1 if current_month > 1 else 12
+                        # Format as 3-digit string with leading zeros
+                        previous_month_str = f"{previous_month:03d}"
+                        
+                        # Find the period for previous month
+                        if previous_month_str in period_numbers:
+                            self.period_from_combo.set(previous_month_str)
+                            self.period_to_combo.set(previous_month_str)
+                        else:
+                            # Fallback to last available period if previous month not found
+                            self.period_from_combo.set(period_numbers[-1])
+                            self.period_to_combo.set(period_numbers[-1])
+                    else:
+                        # For other years, default to full year
+                        self.period_from_combo.set(period_numbers[0])
+                        self.period_to_combo.set(period_numbers[-1])
         
     def _create_widgets(self):
         """Create and layout all UI widgets"""
@@ -305,6 +266,7 @@ class SaftReportingUI:
             width=23
         )
         self.period_from_combo.grid(row=2, column=1, sticky="ew", pady=5)
+        self.period_from_combo.bind('<<ComboboxSelected>>', self._on_period_from_change)
         
         # Period To field - dropdown with periods from selected year
         ttk.Label(main_frame, text="Period To:").grid(row=3, column=0, sticky=tk.W, pady=5)
@@ -326,6 +288,7 @@ class SaftReportingUI:
             width=23
         )
         report_type_combo.grid(row=4, column=1, sticky="ew", pady=5)
+        report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
         
         # Export to Excel checkbox
         export_excel_check = ttk.Checkbutton(
@@ -343,22 +306,12 @@ class SaftReportingUI:
         button_frame.grid(row=6, column=0, columnspan=2, pady=20)
         
         # Generate button
-        generate_btn = ttk.Button(
-            button_frame,
-            text="Generate Report",
-            command=self._generate_report
-        )
-        generate_btn.grid(row=0, column=0, padx=5)
+        ttk.Button(button_frame, text="Generate Report", command=self._generate_report).grid(row=0, column=0, padx=5)
         
         # Cancel button
-        cancel_btn = ttk.Button(
-            button_frame,
-            text="Close",
-            command=self.root.quit
-        )
-        cancel_btn.grid(row=0, column=1, padx=5)
+        ttk.Button(button_frame, text="Close", command=self.root.quit).grid(row=0, column=1, padx=5)
         
-        # Configure grid weights
+        # Configure grid weight for stretching
         main_frame.columnconfigure(1, weight=1)
         
         # Log panel frame
@@ -459,23 +412,13 @@ class SaftReportingUI:
             
             if year in self.periods_by_year:
                 for period in self.periods_by_year[year]:
-                    if period['number'] == period_from and not start_date:
+                    if period['number'] == period_from:
                         start_date = period['start_date']
                     if period['number'] == period_to:
                         end_date = period['end_date']
-            
-            # Display selected parameters
-            message = f"Report Parameters:\n\n"
-            message += f"Company: {company}\n"
-            message += f"Year: {year}\n"
-            message += f"Period From: {period_from}\n"
-            message += f"Period To: {period_to}\n"
-            message += f"Report Type: {report_type}\n"
-            if start_date and end_date:
-                message += f"Date Range: {start_date} to {end_date}\n"
-            message += "\nReady to generate report."
-            
-            messagebox.showinfo("Report Parameters", message)
+                    # Break early if we found both dates
+                    if start_date and end_date:
+                        break
             
             # Store selections for later use
             self.selections = {
@@ -497,6 +440,10 @@ class SaftReportingUI:
     def get_selections(self):
         """Return the user's selections"""
         return getattr(self, 'selections', None)
+    
+    def get_rest_client(self):
+        """Return the cached authenticated REST client"""
+        return self.rest_client
     
     def log(self, message, level="INFO"):
         """Add log message to the text widget"""
@@ -554,18 +501,6 @@ def launch_ui_with_instance(config_path=None):
     app = SaftReportingUI(root, config_path)
     root.mainloop()
     return app.get_selections(), app
-
-
-def create_progress_window():
-    """Create and return a progress window (DEPRECATED - use integrated UI instead)
-    
-    Returns:
-        ProgressWindow instance
-    """
-    root = tk.Tk()
-    progress_window = ProgressWindow(root)
-    progress_window.start_progress()
-    return progress_window
 
 
 if __name__ == "__main__":
