@@ -293,14 +293,16 @@ def main():
         logger.info(f"Total execution time: {total_duration:.2f}s ({minutes} minutes and {seconds} seconds)")
         logger.info("=" * 80)
         
-        # Stop progress and keep window open
+        # Stop progress, re-enable inputs, and keep window open
         ui_app.stop_progress()
-        ui_app.log("Process completed successfully. You can now close this window.", "SUCCESS")
+        ui_app._enable_inputs()
+        ui_app.log("Process completed successfully. You can generate another report or close this window.", "SUCCESS")
         ui_app.root.mainloop()
         
     except Exception as e:
         logger.error(f"Error during export: {e}", exc_info=True)
         ui_app.stop_progress()
+        ui_app._enable_inputs()
         ui_app.log("Process failed. Check the log for details.", "ERROR")
         ui_app.root.mainloop()
         sys.exit(1)

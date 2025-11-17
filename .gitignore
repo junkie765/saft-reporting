@@ -28,6 +28,7 @@ env/
 # Configuration
 config.json
 .env
+oauth_secrets.json
 
 # Output
 output/

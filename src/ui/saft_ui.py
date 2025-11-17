@@ -44,7 +44,7 @@ class SaftReportingUI:
         self.year_var = tk.StringVar()
         self.month_var = tk.StringVar()
         self.report_type_var = tk.StringVar(value="Monthly")
-        self.export_excel_var = tk.BooleanVar(value=True)
+        self.export_excel_var = tk.BooleanVar(value=False)
         
         # Authenticate once and cache the REST client
         self.rest_client = None
@@ -56,14 +56,21 @@ class SaftReportingUI:
             error_msg = str(e)
             if "401" in error_msg or "Unauthorized" in error_msg:
                 messagebox.showerror(
-                    "Authentication Error",
-                    "Salesforce session has expired.\n\nPlease update the session_id in config.json with a fresh token.\n\nSee OAUTH_SETUP.md for instructions."
+                    "Authentication Failed",
+                    "Salesforce authentication failed.\n\nPlease check your OAuth credentials in config.json.\n\nSee OAUTH_SECRETS_SETUP.md for instructions."
                 )
         
         # Fetch data from Salesforce using cached client
         self.companies = self._fetch_companies()
         self.years, self.periods_by_year = self._fetch_periods_from_salesforce()
         self.available_periods = []
+        
+        # Cache current year to avoid repeated datetime.now() calls
+        self.current_year = str(datetime.now().year)
+        self.current_month = datetime.now().month
+        
+        # Build company lookup dict for faster searches
+        self.company_by_name = {c['name']: c['id'] for c in self.companies}
         
         self._create_widgets()
         self._center_window()
@@ -92,7 +99,7 @@ class SaftReportingUI:
         if not self.rest_client:
             # Fallback to current year and 1-12 periods
             current_year = str(datetime.now().year)
-            return [current_year], {current_year: [{'number': str(i), 'name': str(i)} for i in range(1, 13)]}
+            return [current_year], {current_year: [{'number': f'{i:03d}', 'name': f'{i:03d}'} for i in range(1, 13)]}
         
         try:
             # Fetch periods organized by year, filtered by company if provided
@@ -114,12 +121,8 @@ class SaftReportingUI:
         """Update years and periods when company is changed"""
         selected_company = self.company_var.get()
         
-        # Find company ID from name
-        company_id = None
-        for company in self.companies:
-            if company['name'] == selected_company:
-                company_id = company['id']
-                break
+        # Find company ID from name using cached lookup dict
+        company_id = self.company_by_name.get(selected_company)
         
         # Fetch periods for selected company
         self.years, self.periods_by_year = self._fetch_periods_from_salesforce(company_id)
@@ -127,8 +130,7 @@ class SaftReportingUI:
         # Update year dropdown and set default
         self.year_combo['values'] = self.years
         if self.years:
-            current_year = str(datetime.now().year)
-            self.year_combo.set(current_year if current_year in self.years else self.years[-1])
+            self.year_combo.set(self.current_year if self.current_year in self.years else self.years[-1])
             self._on_year_change()
     
     def _on_report_type_change(self, event=None):
@@ -160,12 +162,9 @@ class SaftReportingUI:
             
             # Set default month based on report type
             if period_numbers and report_type == "Monthly":
-                current_year = str(datetime.now().year)
-                current_month = datetime.now().month
-                
-                if selected_year == current_year:
+                if selected_year == self.current_year:
                     # For monthly reports in current year, default to previous month
-                    previous_month = current_month - 1 if current_month > 1 else 12
+                    previous_month = self.current_month - 1 if self.current_month > 1 else 12
                     # Format as 3-digit string with leading zeros
                     previous_month_str = f"{previous_month:03d}"
                     
@@ -193,22 +192,22 @@ class SaftReportingUI:
         # Company field - dropdown with Salesforce companies
         ttk.Label(main_frame, text="Company:").grid(row=0, column=0, sticky=tk.W, pady=5)
         company_names = [c['name'] for c in self.companies]
-        company_combo = ttk.Combobox(
+        self.company_combo = ttk.Combobox(
             main_frame,
             textvariable=self.company_var,
             values=company_names,
             state="readonly",
             width=23
         )
-        company_combo.grid(row=0, column=1, sticky="ew", pady=5)
-        company_combo.bind('<<ComboboxSelected>>', self._on_company_change)
+        self.company_combo.grid(row=0, column=1, sticky="ew", pady=5)
+        self.company_combo.bind('<<ComboboxSelected>>', self._on_company_change)
         
         # Set default company from config or first in list
         default_company = self.config.get('saft', {}).get('company_name', '')
         if default_company and default_company in company_names:
-            company_combo.set(default_company)
+            self.company_combo.set(default_company)
         elif company_names:
-            company_combo.set(company_names[0])
+            self.company_combo.set(company_names[0])
         
         # Year field - dropdown with Salesforce years
         ttk.Label(main_frame, text="Year:").grid(row=1, column=0, sticky=tk.W, pady=5)
@@ -223,9 +222,8 @@ class SaftReportingUI:
         self.year_combo.bind('<<ComboboxSelected>>', self._on_year_change)
         
         # Set default to current year if available
-        current_year = str(datetime.now().year)
-        if current_year in self.years:
-            self.year_combo.set(current_year)
+        if self.current_year in self.years:
+            self.year_combo.set(self.current_year)
         elif self.years:
             self.year_combo.set(self.years[-1])  # Set to most recent year
         
@@ -242,23 +240,23 @@ class SaftReportingUI:
         
         # Report Type picklist
         ttk.Label(main_frame, text="Report Type:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        report_type_combo = ttk.Combobox(
+        self.report_type_combo = ttk.Combobox(
             main_frame,
             textvariable=self.report_type_var,
             values=["Annual", "Monthly"],
             state="readonly",
             width=23
         )
-        report_type_combo.grid(row=3, column=1, sticky="ew", pady=5)
-        report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
+        self.report_type_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self.report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
         
         # Export to Excel checkbox
-        export_excel_check = ttk.Checkbutton(
+        self.export_excel_check = ttk.Checkbutton(
             main_frame,
             text="Export to Excel",
             variable=self.export_excel_var
         )
-        export_excel_check.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=10)
+        self.export_excel_check.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=10)
         
         # Initialize period dropdowns based on default company and year (must be after combo creation)
         self._on_company_change()
@@ -267,8 +265,9 @@ class SaftReportingUI:
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=5, column=0, columnspan=2, pady=20)
         
-        # Generate button
-        ttk.Button(button_frame, text="Generate Report", command=self._generate_report).grid(row=0, column=0, padx=5)
+        # Generate button (store reference for state management)
+        self.generate_button = ttk.Button(button_frame, text="Generate Report", command=self._generate_report)
+        self.generate_button.grid(row=0, column=0, padx=5)
         
         # Cancel button
         ttk.Button(button_frame, text="Close", command=self.root.quit).grid(row=0, column=1, padx=5)
@@ -341,6 +340,9 @@ class SaftReportingUI:
     def _generate_report(self):
         """Handle report generation"""
         if self._validate_inputs():
+            # Disable all input fields and Generate button to prevent changes during processing
+            self._disable_inputs()
+            
             company = self.company_var.get()
             year = self.year_var.get()
             report_type = self.report_type_var.get()
@@ -361,26 +363,19 @@ class SaftReportingUI:
                 period_from = month
                 period_to = month
             
-            # Find company ID
-            company_id = None
-            for comp in self.companies:
-                if comp['name'] == company:
-                    company_id = comp['id']
-                    break
+            # Find company ID using cached lookup dict
+            company_id = self.company_by_name.get(company)
             
-            # Get date ranges from periods
+            # Get date ranges from periods - build lookup dict for faster access
             start_date = None
             end_date = None
             
             if year in self.periods_by_year:
-                for period in self.periods_by_year[year]:
-                    if period['number'] == period_from:
-                        start_date = period['start_date']
-                    if period['number'] == period_to:
-                        end_date = period['end_date']
-                    # Break early if we found both dates
-                    if start_date and end_date:
-                        break
+                period_dict = {p['number']: p for p in self.periods_by_year[year]}
+                if period_from in period_dict:
+                    start_date = period_dict[period_from]['start_date']
+                if period_to in period_dict:
+                    end_date = period_dict[period_to]['end_date']
             
             # Store selections for later use
             self.selections = {
@@ -433,6 +428,24 @@ class SaftReportingUI:
         self.progress.stop()
         self.progress.grid_remove()
         self.root.update()
+    
+    def _disable_inputs(self):
+        """Disable all input fields during processing"""
+        self.company_combo.config(state="disabled")
+        self.year_combo.config(state="disabled")
+        self.month_combo.config(state="disabled")
+        self.report_type_combo.config(state="disabled")
+        self.export_excel_check.config(state="disabled")
+        self.generate_button.config(state="disabled")
+    
+    def _enable_inputs(self):
+        """Re-enable all input fields after processing"""
+        self.company_combo.config(state="readonly")
+        self.year_combo.config(state="readonly")
+        self.month_combo.config(state="readonly")
+        self.report_type_combo.config(state="readonly")
+        self.export_excel_check.config(state="normal")
+        self.generate_button.config(state="normal")
 
 
 def launch_ui(config_path=None):
