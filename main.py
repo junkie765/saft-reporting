@@ -212,8 +212,10 @@ def main():
     # Validate dates (still needed for XML generation)
     start_date, end_date = validate_dates(selections['start_date'], selections['end_date'])
     
-    logger.info(f"UI selections: Company={selections['company']}, Year={selections['year']}, Period={selections['period_from']}-{selections['period_to']}")
-    logger.info(f"Period range: {selections['year']} Period {selections['period_from']} to {selections['period_to']}")
+    # Format period display based on report type
+    period_display = f"{selections['period_from']}-{selections['period_to']}" if selections['report_type'] == "Annual" else selections['period_from']
+    
+    logger.info(f"UI selections: Company={selections['company']}, Year={selections['year']}, Period={period_display}, Type={selections['report_type']}")
     logger.info(f"Date range (for display): {start_date.date()} to {end_date.date()}")
     logger.info(f"Company filter: {selections['company']}")
     

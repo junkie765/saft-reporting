@@ -29,7 +29,7 @@ class SaftReportingUI:
     def __init__(self, root, config_path=None):
         self.root = root
         self.root.title("SAFT Reporting - Parameter Selection")
-        self.root.geometry("900x450")
+        self.root.state('zoomed')  # Maximize window
         self.root.resizable(True, True)
         
         # Load configuration
@@ -42,8 +42,7 @@ class SaftReportingUI:
         # Variables to store user selections
         self.company_var = tk.StringVar()
         self.year_var = tk.StringVar()
-        self.period_from_var = tk.StringVar()
-        self.period_to_var = tk.StringVar()
+        self.month_var = tk.StringVar()
         self.report_type_var = tk.StringVar(value="Monthly")
         self.export_excel_var = tk.BooleanVar(value=True)
         
@@ -132,32 +131,23 @@ class SaftReportingUI:
             self.year_combo.set(current_year if current_year in self.years else self.years[-1])
             self._on_year_change()
     
-    def _on_period_from_change(self, event=None):
-        """Auto-populate Period To when Period From is selected"""
-        period_from = self.period_from_var.get()
-        if period_from:
-            self.period_to_var.set(period_from)
-    
     def _on_report_type_change(self, event=None):
-        """Update period defaults when report type is changed"""
+        """Update month field visibility when report type is changed"""
         report_type = self.report_type_var.get()
         
         if report_type == "Annual":
-            # Disable period fields for Annual reports
-            self.period_from_combo.config(state="disabled")
-            self.period_to_combo.config(state="disabled")
-            # Set to full year (001 to 012)
-            self.period_from_var.set("001")
-            self.period_to_var.set("012")
+            # Hide month field for Annual reports (shows full year)
+            self.month_label.grid_remove()
+            self.month_combo.grid_remove()
         else:
-            # Enable period fields for Monthly reports
-            self.period_from_combo.config(state="readonly")
-            self.period_to_combo.config(state="readonly")
+            # Show month field for Monthly reports
+            self.month_label.grid()
+            self.month_combo.grid()
             # Update with appropriate defaults
             self._on_year_change()
     
     def _on_year_change(self, event=None):
-        """Update period dropdowns when year is changed"""
+        """Update month dropdown when year is changed"""
         selected_year = self.year_var.get()
         report_type = self.report_type_var.get()
         
@@ -165,47 +155,29 @@ class SaftReportingUI:
             self.available_periods = self.periods_by_year[selected_year]
             period_numbers = [p['number'] for p in self.available_periods]
             
-            # Update Period From dropdown
-            self.period_from_combo['values'] = period_numbers
+            # Update Month dropdown
+            self.month_combo['values'] = period_numbers
             
-            # Update Period To dropdown
-            self.period_to_combo['values'] = period_numbers
-            
-            # Set default periods based on report type
-            if period_numbers:
-                if report_type == "Annual":
-                    # For annual reports, always set to full year and disable
-                    # Use first and last available periods (typically '001' and '012')
-                    self.period_from_var.set(period_numbers[0])
-                    self.period_to_var.set(period_numbers[-1])
-                    self.period_from_combo.config(state="disabled")
-                    self.period_to_combo.config(state="disabled")
-                elif report_type == "Monthly":
-                    # Enable fields for monthly reports
-                    self.period_from_combo.config(state="readonly")
-                    self.period_to_combo.config(state="readonly")
+            # Set default month based on report type
+            if period_numbers and report_type == "Monthly":
+                current_year = str(datetime.now().year)
+                current_month = datetime.now().month
+                
+                if selected_year == current_year:
+                    # For monthly reports in current year, default to previous month
+                    previous_month = current_month - 1 if current_month > 1 else 12
+                    # Format as 3-digit string with leading zeros
+                    previous_month_str = f"{previous_month:03d}"
                     
-                    current_year = str(datetime.now().year)
-                    current_month = datetime.now().month
-                    
-                    if selected_year == current_year:
-                        # For monthly reports in current year, default to previous month
-                        previous_month = current_month - 1 if current_month > 1 else 12
-                        # Format as 3-digit string with leading zeros
-                        previous_month_str = f"{previous_month:03d}"
-                        
-                        # Find the period for previous month
-                        if previous_month_str in period_numbers:
-                            self.period_from_combo.set(previous_month_str)
-                            self.period_to_combo.set(previous_month_str)
-                        else:
-                            # Fallback to last available period if previous month not found
-                            self.period_from_combo.set(period_numbers[-1])
-                            self.period_to_combo.set(period_numbers[-1])
+                    # Find the period for previous month
+                    if previous_month_str in period_numbers:
+                        self.month_combo.set(previous_month_str)
                     else:
-                        # For other years, default to full year
-                        self.period_from_combo.set(period_numbers[0])
-                        self.period_to_combo.set(period_numbers[-1])
+                        # Fallback to last available period if previous month not found
+                        self.month_combo.set(period_numbers[-1])
+                else:
+                    # For other years, default to December (last period)
+                    self.month_combo.set(period_numbers[-1])
         
     def _create_widgets(self):
         """Create and layout all UI widgets"""
@@ -257,29 +229,19 @@ class SaftReportingUI:
         elif self.years:
             self.year_combo.set(self.years[-1])  # Set to most recent year
         
-        # Period From field - dropdown with periods from selected year
-        ttk.Label(main_frame, text="Period From:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.period_from_combo = ttk.Combobox(
+        # Month field - dropdown with periods from selected year (only for Monthly reports)
+        self.month_label = ttk.Label(main_frame, text="Month:")
+        self.month_label.grid(row=2, column=0, sticky=tk.W, pady=5)
+        self.month_combo = ttk.Combobox(
             main_frame,
-            textvariable=self.period_from_var,
+            textvariable=self.month_var,
             state="readonly",
             width=23
         )
-        self.period_from_combo.grid(row=2, column=1, sticky="ew", pady=5)
-        self.period_from_combo.bind('<<ComboboxSelected>>', self._on_period_from_change)
-        
-        # Period To field - dropdown with periods from selected year
-        ttk.Label(main_frame, text="Period To:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.period_to_combo = ttk.Combobox(
-            main_frame,
-            textvariable=self.period_to_var,
-            state="readonly",
-            width=23
-        )
-        self.period_to_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self.month_combo.grid(row=2, column=1, sticky="ew", pady=5)
         
         # Report Type picklist
-        ttk.Label(main_frame, text="Report Type:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Report Type:").grid(row=3, column=0, sticky=tk.W, pady=5)
         report_type_combo = ttk.Combobox(
             main_frame,
             textvariable=self.report_type_var,
@@ -287,7 +249,7 @@ class SaftReportingUI:
             state="readonly",
             width=23
         )
-        report_type_combo.grid(row=4, column=1, sticky="ew", pady=5)
+        report_type_combo.grid(row=3, column=1, sticky="ew", pady=5)
         report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
         
         # Export to Excel checkbox
@@ -296,14 +258,14 @@ class SaftReportingUI:
             text="Export to Excel",
             variable=self.export_excel_var
         )
-        export_excel_check.grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=10)
+        export_excel_check.grid(row=4, column=0, columnspan=2, sticky=tk.W, pady=10)
         
         # Initialize period dropdowns based on default company and year (must be after combo creation)
         self._on_company_change()
         
         # Buttons frame
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=6, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=5, column=0, columnspan=2, pady=20)
         
         # Generate button
         ttk.Button(button_frame, text="Generate Report", command=self._generate_report).grid(row=0, column=0, padx=5)
@@ -363,30 +325,16 @@ class SaftReportingUI:
         if not year:
             messagebox.showerror("Validation Error", "Please select a year.")
             return False
-            
-        # Validate periods
-        period_from = self.period_from_var.get()
-        period_to = self.period_to_var.get()
         
-        if not period_from:
-            messagebox.showerror("Validation Error", "Please select Period From.")
-            return False
-            
-        if not period_to:
-            messagebox.showerror("Validation Error", "Please select Period To.")
-            return False
+        # Validate report type
+        report_type = self.report_type_var.get()
         
-        # Check that Period From <= Period To
-        try:
-            from_num = int(period_from)
-            to_num = int(period_to)
-            
-            if from_num > to_num:
-                messagebox.showerror("Validation Error", "Period From cannot be greater than Period To.")
+        # Validate month for Monthly reports
+        if report_type == "Monthly":
+            month = self.month_var.get()
+            if not month:
+                messagebox.showerror("Validation Error", "Please select a month.")
                 return False
-        except ValueError:
-            # If periods are not numeric, skip the comparison
-            pass
             
         return True
         
@@ -395,9 +343,23 @@ class SaftReportingUI:
         if self._validate_inputs():
             company = self.company_var.get()
             year = self.year_var.get()
-            period_from = self.period_from_var.get()
-            period_to = self.period_to_var.get()
             report_type = self.report_type_var.get()
+            
+            # Determine period range based on report type
+            if report_type == "Annual":
+                # For annual reports, use full year (first to last period)
+                if year in self.periods_by_year:
+                    periods = self.periods_by_year[year]
+                    period_from = periods[0]['number'] if periods else '001'
+                    period_to = periods[-1]['number'] if periods else '012'
+                else:
+                    period_from = '001'
+                    period_to = '012'
+            else:
+                # For monthly reports, use selected month for both from and to
+                month = self.month_var.get()
+                period_from = month
+                period_to = month
             
             # Find company ID
             company_id = None
