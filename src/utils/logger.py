@@ -16,7 +16,7 @@ except ImportError:
     ColoredFormatter = None  # type: ignore
 
 
-def setup_logger(level: str = 'INFO', log_dir: str = 'logs'):
+def setup_logger(level: str = 'INFO', log_dir: str = 'logs', use_console: bool = False):
     """Setup console and file logger with optional color support"""
     
     # Create log directory if it doesn't exist
@@ -49,10 +49,6 @@ def setup_logger(level: str = 'INFO', log_dir: str = 'logs'):
     else:
         console_formatter = file_formatter
     
-    # Setup console handler
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setFormatter(console_formatter)
-    
     # Setup file handler
     file_handler = logging.FileHandler(log_file, encoding='utf-8')
     file_handler.setFormatter(file_formatter)
@@ -60,8 +56,13 @@ def setup_logger(level: str = 'INFO', log_dir: str = 'logs'):
     # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, level.upper()))
-    root_logger.addHandler(console_handler)
     root_logger.addHandler(file_handler)
+    
+    # Setup console handler (only if requested)
+    if use_console:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
     
     # Suppress verbose libraries
     logging.getLogger('urllib3').setLevel(logging.WARNING)

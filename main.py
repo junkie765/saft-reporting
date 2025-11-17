@@ -47,24 +47,6 @@ def parse_arguments():
         description='Extract Certinia Finance data and generate SAF-T XML for Bulgaria'
     )
     parser.add_argument(
-        '--start-date',
-        type=str,
-        required=True,
-        help='Start date for data extraction (YYYY-MM-DD)'
-    )
-    parser.add_argument(
-        '--end-date',
-        type=str,
-        required=True,
-        help='End date for data extraction (YYYY-MM-DD)'
-    )
-    parser.add_argument(
-        '--company',
-        type=str,
-        default=None,
-        help='Company name to filter data (e.g., "Scalefocus AD")'
-    )
-    parser.add_argument(
         '--config',
         type=str,
         default='config.json',
@@ -119,16 +101,56 @@ def validate_dates(start_date: str, end_date: str) -> tuple:
         sys.exit(1)
 
 
+class UILogHandler(logging.Handler):
+    """Custom logging handler that sends logs to UI window"""
+    def __init__(self, ui_app):
+        super().__init__()
+        self.ui_app = ui_app
+        
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            level = record.levelname
+            # Remove timestamp from message since UI adds it
+            if ' - ' in msg:
+                parts = msg.split(' - ', 2)
+                if len(parts) >= 3:
+                    msg = parts[2]
+            self.ui_app.log(msg, level)
+        except Exception:
+            self.handleError(record)
+
+
 def main():
     """Main execution function"""
     import time
+    from src.ui.saft_ui import launch_ui_with_instance
     
     # Parse arguments
     args = parse_arguments()
     
-    # Setup logging
-    setup_logger(args.log_level)
+    # Load configuration first (needed for UI)
+    config = load_config(args.config)
+    
+    # Launch UI for parameter selection and get both selections and UI instance
+    selections, ui_app = launch_ui_with_instance(args.config)
+    
+    if not selections:
+        sys.exit(0)
+    
+    # Start progress bar
+    ui_app.start_progress()
+    
+    # Setup logging with file handler and UI handler
+    setup_logger(args.log_level, use_console=False)
     logger = logging.getLogger(__name__)
+    
+    # Add UI handler to root logger
+    ui_handler = UILogHandler(ui_app)
+    ui_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    ui_handler.setFormatter(formatter)
+    logging.getLogger().addHandler(ui_handler)
     
     # Track overall execution time
     total_start_time = time.time()
@@ -137,13 +159,17 @@ def main():
     logger.info("SAF-T Bulgaria Export - Certinia Finance Cloud")
     logger.info("=" * 80)
     
-    # Load configuration
-    logger.info(f"Loading configuration from {args.config}")
-    config = load_config(args.config)
+    # Extract parameters from UI selections
+    start_date_str = selections['start_date']
+    end_date_str = selections['end_date']
+    company_name = selections['company']
+    
+    logger.info(f"UI selections: Company={company_name}, Period={selections['period_from']}-{selections['period_to']}")
     
     # Validate dates
-    start_date, end_date = validate_dates(args.start_date, args.end_date)
+    start_date, end_date = validate_dates(start_date_str, end_date_str)
     logger.info(f"Data extraction period: {start_date.date()} to {end_date.date()}")
+    logger.info(f"Company filter: {company_name}")
     
     try:
         # Step 1: Authenticate with Salesforce
@@ -163,10 +189,8 @@ def main():
         
         # Step 3: Extract data from Certinia
         logger.info("Step 3: Extracting data from Certinia...")
-        if args.company:
-            logger.info(f"  Company filter: {args.company}")
         step_start = time.time()
-        certinia_data = rest_client.extract_certinia_data(start_date, end_date, args.company)
+        certinia_data = rest_client.extract_certinia_data(start_date, end_date, company_name)
         step_duration = time.time() - step_start
         logger.info(f"✓ Data extraction complete (took {step_duration:.2f}s)")
         
@@ -207,7 +231,7 @@ def main():
         logger.info(f"✓ SAF-T XML generated: {output_path} (took {step_duration:.2f}s)")
         
         # Step 6: Export to Excel (if requested)
-        if args.export_excel:
+        if selections.get('export_excel', False):
             logger.info("Step 6: Exporting data to Excel...")
             step_start = time.time()
             excel_exporter = ExcelExporter()
@@ -227,14 +251,22 @@ def main():
         
         # Summary
         logger.info("=" * 80)
-        logger.info("Export completed successfully!")
+        logger.info("Export completed successfully!", extra={'level': 'SUCCESS'})
         logger.info(f"SAF-T XML file: {output_path.absolute()}")
         logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
         logger.info(f"Total execution time: {total_duration:.2f}s ({total_duration/60:.2f} minutes)")
         logger.info("=" * 80)
         
+        # Stop progress and keep window open
+        ui_app.stop_progress()
+        ui_app.log("Process completed successfully. You can now close this window.", "SUCCESS")
+        ui_app.root.mainloop()
+        
     except Exception as e:
         logger.error(f"Error during export: {e}", exc_info=True)
+        ui_app.stop_progress()
+        ui_app.log("Process failed. Check the log for details.", "ERROR")
+        ui_app.root.mainloop()
         sys.exit(1)
 
 

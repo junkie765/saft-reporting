@@ -285,3 +285,20 @@ class SalesforceAuth:
         if self.session:
             return self.session.session_id
         return None
+
+
+def get_authenticated_client(config: dict):
+    """
+    Helper function to get an authenticated Salesforce REST client
+    
+    Args:
+        config: Configuration dictionary containing Salesforce settings
+        
+    Returns:
+        SalesforceRestClient: Authenticated REST client instance
+    """
+    from .rest_client import SalesforceRestClient
+    
+    auth = SalesforceAuth(config['salesforce'])
+    sf_session = auth.authenticate()
+    return SalesforceRestClient(sf_session, config)

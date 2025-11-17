@@ -361,3 +361,102 @@ class SalesforceRestClient:
             data['company'] = self.query_rest(company_query, "companies")
         
         return data
+    
+    def get_companies(self) -> list[dict]:
+        """
+        Fetch all accounting companies from Salesforce
+        
+        Returns:
+            List of company dictionaries with Id and Name
+        """
+        try:
+            query = """
+                SELECT Id, Name
+                FROM c2g__codaCompany__c
+                ORDER BY Name ASC
+            """
+            results = self.query_rest(query, "companies")
+            
+            companies = [{
+                'id': record.get('Id', ''),
+                'name': record.get('Name', '')
+            } for record in results]
+            
+            logger.info(f"Fetched {len(companies)} companies from Salesforce")
+            return companies
+            
+        except Exception as e:
+            logger.error(f"Error fetching companies from Salesforce: {e}")
+            raise
+    
+    def get_periods_by_year(self, company_id: str | None = None) -> tuple[list[str], dict[str, list[dict]]]:
+        """
+        Fetch years and periods from Salesforce c2g__codaPeriod__c object
+        
+        Args:
+            company_id: Optional company ID to filter periods by company
+        
+        Returns:
+            Tuple of (years_list, periods_by_year_dict) where:
+            - years_list: Sorted list of year names
+            - periods_by_year_dict: Dictionary mapping year names to list of period info dicts
+        """
+        try:
+            # Build query with optional company filter
+            if company_id:
+                query = f"""
+                    SELECT Name, c2g__PeriodNumber__c, c2g__YearName__r.Name, 
+                           c2g__StartDate__c, c2g__EndDate__c, c2g__OwnerCompany__c
+                    FROM c2g__codaPeriod__c 
+                    WHERE c2g__OwnerCompany__c = '{company_id}'
+                    ORDER BY c2g__YearName__r.Name ASC, c2g__StartDate__c ASC
+                """
+            else:
+                query = """
+                    SELECT Name, c2g__PeriodNumber__c, c2g__YearName__r.Name, 
+                           c2g__StartDate__c, c2g__EndDate__c, c2g__OwnerCompany__c
+                    FROM c2g__codaPeriod__c 
+                    ORDER BY c2g__YearName__r.Name ASC, c2g__StartDate__c ASC
+                """
+            
+            results = self.query_rest(query, "periods")
+            
+            # Organize data by year, using dict to track unique periods
+            years_set = set()
+            periods_by_year = {}
+            
+            for record in results:
+                if 'c2g__YearName__r' in record and record['c2g__YearName__r']:
+                    year_name = record['c2g__YearName__r']['Name']
+                    period_num = record.get('c2g__PeriodNumber__c', '')
+                    
+                    years_set.add(year_name)
+                    
+                    if year_name not in periods_by_year:
+                        periods_by_year[year_name] = {}
+                    
+                    # Use period number as key to ensure uniqueness
+                    if period_num not in periods_by_year[year_name]:
+                        periods_by_year[year_name][period_num] = {
+                            'number': period_num,
+                            'name': record.get('Name', ''),
+                            'start_date': record.get('c2g__StartDate__c', ''),
+                            'end_date': record.get('c2g__EndDate__c', ''),
+                            'company_id': record.get('c2g__OwnerCompany__c', '')
+                        }
+            
+            # Convert period dicts back to sorted lists
+            for year in periods_by_year:
+                periods_by_year[year] = sorted(
+                    periods_by_year[year].values(),
+                    key=lambda x: x['number']
+                )
+            
+            years = sorted(list(years_set))
+            logger.info(f"Fetched {len(years)} years and periods from Salesforce")
+            
+            return years, periods_by_year
+            
+        except Exception as e:
+            logger.error(f"Error fetching periods from Salesforce: {e}")
+            raise
