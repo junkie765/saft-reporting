@@ -91,20 +91,24 @@ class SalesforceAuth:
         try:
             logger.info("Authenticating using OAuth 2.0 (SSO)...")
             
-            # Check if we have a valid access token or refresh token
-            if self.config.get('oauth', {}).get('access_token'):
-                try:
-                    return self._authenticate_with_access_token()
-                except:
-                    logger.info("Access token expired or invalid, starting OAuth flow...")
-            
+            # Try refresh token first (faster than access token validation)
             if self.config.get('oauth', {}).get('refresh_token'):
                 try:
+                    logger.info("Attempting authentication with refresh token...")
                     return self._authenticate_refresh_token()
-                except:
-                    logger.info("Refresh token expired or invalid, starting OAuth flow...")
+                except Exception as e:
+                    logger.info(f"Refresh token authentication failed: {e}")
             
-            # Start interactive OAuth flow with PKCE
+            # Try access token if refresh token failed or doesn't exist
+            if self.config.get('oauth', {}).get('access_token'):
+                try:
+                    logger.info("Attempting authentication with access token...")
+                    return self._authenticate_with_access_token()
+                except Exception as e:
+                    logger.info(f"Access token authentication failed: {e}")
+            
+            # Start interactive OAuth flow with PKCE as last resort
+            logger.info("Starting interactive OAuth flow...")
             return self._authenticate_oauth_interactive()
             
         except Exception as e:
@@ -128,8 +132,15 @@ class SalesforceAuth:
             version=self.config.get('api_version', '65.0')
         )
         
-        logger.info(f"✓ Connected to: {instance_url}")
-        return self.session
+        # Test if the access token is valid by making a simple query
+        try:
+            # Simple query to validate token
+            self.session.query("SELECT Id FROM User LIMIT 1")
+            logger.info(f"✓ Connected to: {instance_url}")
+            return self.session
+        except Exception as e:
+            logger.info(f"Access token validation failed: {e}")
+            raise ValueError(f"Access token is invalid or expired: {e}")
     
     def _authenticate_oauth_interactive(self) -> Salesforce:
         """Interactive OAuth flow with browser and local callback server"""

@@ -3,12 +3,32 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['tkinter', 'tkinter.ttk', 'openpyxl', 'pandas']
+hiddenimports = [
+    'tkinter', 'tkinter.ttk', 'tkinter.messagebox',
+    'openpyxl', 'openpyxl.cell._writer', 'openpyxl.worksheet._writer',
+    'pandas', 'pandas._libs', 'pandas._libs.tslibs.timedeltas',
+    'json', 'csv', 'io', 'pathlib', 'argparse',
+    'logging', 'logging.handlers', 'colorlog',
+    'datetime', 'time',
+    'webbrowser', 'http.server', 'socketserver', 'threading',
+    'urllib.parse', 'hashlib', 'base64', 'secrets',
+    'typing',
+    'python-dateutil', 'dateutil',
+    'pyyaml', 'yaml'
+]
+
+# Collect all dependencies for key packages
 tmp_ret = collect_all('requests')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('lxml')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('simple_salesforce')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('openpyxl')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('pandas')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('dateutil')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
