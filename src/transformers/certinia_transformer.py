@@ -210,7 +210,8 @@ class CertiniaTransformer:
             ),
             'customers': self._transform_customers(
                 data.get('accounts', []),
-                account_balances
+                transaction_lines,
+                gl_account_codes
             ),
             'suppliers': self._transform_suppliers(
                 data.get('accounts', []),
@@ -415,23 +416,122 @@ class CertiniaTransformer:
         
         return account_balances
     
-    def _transform_customers(self, accounts: List[Dict], account_balances: Dict[str, Dict]) -> List[Dict]:
-        """Transform customer accounts with calculated balances"""
-        default_balances = {'opening_debit_balance': 0.0, 'closing_debit_balance': 0.0, 
-                            'opening_credit_balance': 0.0, 'closing_credit_balance': 0.0}
+    def _transform_customers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str]) -> List[Dict]:
+        """Transform customer accounts with calculated balances
         
-        transformed = []
-        for acc in accounts:
-            if self._get_record_type(acc) != 'Standard':
+        Applies special logic for customers:
+        - Only includes accounts with RecordType = 'Standard'
+        - Filters transactions by GL accounts starting with '411'
+        - Calculates balances separately from general account balance calculation
+        - Opening balance: all periods before start period
+        - Closing balance: all periods through end period
+        - Negative amount = credit, Positive amount = debit
+        """
+        logger.info("Calculating customer balances with GL account 411* filter...")
+        
+        # Get period info once
+        period_info = self._get_period_info()
+        start_period_number = f"{period_info['start_period_year']}{period_info['start_period']:03d}"
+        end_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
+        
+        # Pre-filter and build customer account mapping
+        customer_accounts = {
+            acc_id: acc for acc in accounts
+            if (acc_id := acc.get('Id')) and self._get_record_type(acc) == 'Standard'
+        }
+        
+        logger.info(f"Found {len(customer_accounts)} customer accounts")
+        
+        # Use frozenset for O(1) lookups
+        customer_ids = frozenset(customer_accounts.keys())
+        
+        # Reverse mapping: GL account ID -> GL account code (pre-computed)
+        gl_id_to_code = {gl_id: code for gl_id, code in gl_account_codes.items()}
+        
+        # Calculate balances using simple dict
+        customer_balances = {}
+        filtered_count = 0
+        processed_count = 0
+        
+        # Process transaction lines with optimized checks
+        for line in transaction_lines:
+            # Fast path: check customer membership first
+            account_id = line.get('c2g__Account__c')
+            if not account_id or account_id not in customer_ids:
                 continue
             
-            acc_id = acc.get('Id')
-            if not isinstance(acc_id, str) or not acc_id:
+            # Early exit: check GL code before extracting period/value
+            gl_account_id = line.get('c2g__GeneralLedgerAccount__c')
+            if not gl_account_id:
                 continue
-            balances = account_balances.get(acc_id, default_balances)
+            
+            gl_code = gl_id_to_code.get(gl_account_id, '')
+            if not str(gl_code).startswith('411'):
+                filtered_count += 1
+                continue
+            
+            # Now extract period and value (only for relevant lines)
+            period_number = self._get_period_number(line)
+            if not period_number:
+                continue
+            
+            net_value = self._get_net_value(line)
+            if net_value == 0:
+                continue  # Skip zero-value lines
+            
+            processed_count += 1
+            
+            # Initialize balance dict on first use
+            if account_id not in customer_balances:
+                customer_balances[account_id] = {
+                    'opening_debit': 0.0, 'opening_credit': 0.0,
+                    'closing_debit': 0.0, 'closing_credit': 0.0
+                }
+            
+            balances = customer_balances[account_id]
+            
+            # Accumulate balances based on period and sign
+            is_opening = period_number < start_period_number
+            is_closing = period_number <= end_period_number
+            
+            if net_value > 0:
+                if is_opening:
+                    balances['opening_debit'] += net_value
+                if is_closing:
+                    balances['closing_debit'] += net_value
+            else:  # net_value < 0
+                abs_value = abs(net_value)
+                if is_opening:
+                    balances['opening_credit'] += abs_value
+                if is_closing:
+                    balances['closing_credit'] += abs_value
+        
+        logger.info(f"Processed {processed_count} transaction lines for customers (filtered {filtered_count} non-411 GL accounts)")
+        
+        # Transform to final structure with optimized balance calculation
+        transformed = []
+        for account_id, acc in customer_accounts.items():
+            balances = customer_balances.get(account_id)
+            
+            # If no balances, use zeros
+            if not balances:
+                opening_debit_bal = opening_credit_bal = 0.0
+                closing_debit_bal = closing_credit_bal = 0.0
+            else:
+                # Calculate net and convert to presentation format
+                opening_net = balances['opening_debit'] - balances['opening_credit']
+                closing_net = balances['closing_debit'] - balances['closing_credit']
+                
+                opening_debit_bal = max(0.0, opening_net)
+                opening_credit_bal = max(0.0, -opening_net)
+                closing_debit_bal = max(0.0, closing_net)
+                closing_credit_bal = max(0.0, -closing_net)
+            
+            # Cache frequently accessed fields
+            acc_number = acc.get('AccountNumber', acc.get('Id'))
             
             transformed.append({
-                'customer_id': acc.get('AccountNumber', acc_id),
+                'customer_id': acc_number,
                 'account_id': acc.get('AccountNumber', ''),
                 'customer_tax_id': acc.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
                 'company_name': acc.get('Name', ''),
@@ -447,9 +547,15 @@ class CertiniaTransformer:
                     'postal_code': acc.get('BillingPostalCode', ''),
                     'country': acc.get('BillingCountry', 'BG')
                 },
-                **balances
+                'opening_debit_balance': opening_debit_bal,
+                'opening_credit_balance': opening_credit_bal,
+                'closing_debit_balance': closing_debit_bal,
+                'closing_credit_balance': closing_credit_bal
             })
         
+        # Sort customers alphabetically by company name
+        transformed.sort(key=lambda c: c.get('company_name', ''))
+        logger.info(f"Transformed {len(transformed)} customers with GL 411* filtering")
         return transformed
     
     def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str]) -> List[Dict]:
