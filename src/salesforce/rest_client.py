@@ -259,10 +259,11 @@ class SalesforceRestClient:
             company_query = f"""
                 SELECT Id, Name, FF_Name_cyrillic__c, c2g__Street__c, c2g__City__c, 
                        F_City_Cyrillic__c, c2g__ZipPostCode__c, c2g__Country__c, 
-                       c2g__Phone__c, c2g__Fax__c, c2g__ContactEmail__c, c2g__Website__c,
+                       c2g__Phone__c, c2g__ContactEmail__c, c2g__Website__c,
                        c2g__VATRegistrationNumber__c, c2g__TaxIdentificationNumber__c,
                        SFocus_Company_Identification_Number__c, c2g__StateProvince__c,
-                       F_Address_Cyrillic__c, c2g__BankAccount__r.c2g__IBANNumber__c
+                       F_Address_Cyrillic__c, c2g__BankAccount__r.c2g__IBANNumber__c,
+                       Contact__r.FirstName, Contact__r.LastName, Contact__r.Title
                 FROM {objects_config['company']}
                 WHERE Name = '{company_filter}'
                 LIMIT 1
@@ -414,7 +415,7 @@ class SalesforceRestClient:
             if gl_account_ids:
                 gl_ids_str = "','".join(gl_account_ids)
                 gl_query = f"""
-                    SELECT Id, Name, c2g__ReportingCode__c, c2g__Type__c, 
+                    SELECT Id, Name, F_Bulgarian_GLA_Name__c, c2g__ReportingCode__c, c2g__StandardAccountID__c, c2g__Type__c, 
                            c2g__TrialBalance1__c, c2g__TrialBalance2__c
                     FROM {objects_config['general_ledger']}
                     WHERE Id IN ('{gl_ids_str}')
@@ -424,7 +425,7 @@ class SalesforceRestClient:
                 data['gl_accounts'] = []
         else:
             gl_query = f"""
-                SELECT Id, Name, c2g__ReportingCode__c, c2g__Type__c, 
+                SELECT Id, Name, c2g__ReportingCode__c, c2g__StandardAccountID__c, c2g__Type__c, 
                        c2g__TrialBalance1__c, c2g__TrialBalance2__c
                 FROM {objects_config['general_ledger']}
                 WHERE c2g__ReportingCode__c != null
@@ -454,8 +455,10 @@ class SalesforceRestClient:
                         account_query = f"""
                             SELECT Id, Name, AccountNumber, Type, BillingStreet, 
                                    BillingCity, BillingPostalCode, BillingCountry, Phone,
-                                   c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
-                                   c2g__CODAInvoiceEmail__c, RecordType.Name
+                                   c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c,
+                                   c2g__CODAECCountryCode__c, F_Group__r.Name, Fax, Website, c2g__CODAInvoiceEmail__c, RecordType.Name,
+                                   c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
+                                   c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c
                             FROM {objects_config['account']}
                             WHERE Id IN ('{acc_ids_str}')
                               AND (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
@@ -472,8 +475,10 @@ class SalesforceRestClient:
                 account_query = f"""
                     SELECT Id, Name, AccountNumber, Type, BillingStreet, 
                            BillingCity, BillingPostalCode, BillingCountry, Phone,
-                           c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
-                           c2g__CODAInvoiceEmail__c, RecordType.Name
+                           c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c,
+                           c2g__CODAECCountryCode__c, F_Group__r.Name, Fax, Website, c2g__CODAInvoiceEmail__c, RecordType.Name,
+                           c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
+                           c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c
                     FROM {objects_config['account']}
                     WHERE (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
                 """

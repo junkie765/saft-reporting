@@ -249,6 +249,8 @@ def main():
             # Update config with command-line dates for transformer
             config['saft']['selection_start_date'] = start_date.strftime('%Y-%m-%d')
             config['saft']['selection_end_date'] = end_date.strftime('%Y-%m-%d')
+            # Map report type to header comment: Monthly -> M, Annual -> A
+            config['saft']['header_comment'] = 'M' if selections['report_type'] == 'Monthly' else 'A'
             transformer = CertiniaTransformer(config)
             saft_data = transformer.transform(certinia_data)
             step_duration = time.time() - step_start

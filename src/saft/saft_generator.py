@@ -55,12 +55,8 @@ class SAFTGenerator:
         
         addr_elem = self._elem(parent, "Address")
         self._elem(addr_elem, "StreetName", str(address.get('street_name', address.get('street', ''))))
-        self._elem(addr_elem, "Number", "")
-        self._elem(addr_elem, "AdditionalAddressDetail", "")
-        self._elem(addr_elem, "Building", "")
         self._elem(addr_elem, "City", str(address.get('city', '')))
         self._elem(addr_elem, "PostalCode", str(address.get('postal_code', '')))
-        self._elem(addr_elem, "Region", str(address.get('region', address.get('state_province', ''))))
         self._elem(addr_elem, "Country", str(address.get('country', 'BG')))
         self._elem(addr_elem, "AddressType", address_type)
         return addr_elem
@@ -85,8 +81,16 @@ class SAFTGenerator:
             contact = {}
         
         contact_elem = self._elem(parent, "Contact")
+        
+        # Add contact person details if available
+        if contact.get('contact_first_name'):
+            self._elem(contact_elem, "ContactPerson", "")
+            self._elem(contact_elem, "FirstName", str(contact.get('contact_first_name', '')))
+            self._elem(contact_elem, "FamilyName", str(contact.get('contact_last_name', '')))
+            if contact.get('contact_title'):
+                self._elem(contact_elem, "Title", str(contact.get('contact_title', '')))
+        
         self._elem(contact_elem, "Telephone", str(contact.get('telephone', '')))
-        self._elem(contact_elem, "Fax", str(contact.get('fax', '')))
         self._elem(contact_elem, "Email", str(contact.get('email', '')))
         self._elem(contact_elem, "Website", str(contact.get('website', '')))
         return contact_elem
@@ -181,6 +185,7 @@ class SAFTGenerator:
         company = header['company']
         self._elem(company_elem, "RegistrationNumber", company['registration_number'])
         self._elem(company_elem, "Name", company['name'])
+        self._elem(company_elem, "NameLatin", company['name_latin'])
         
         # Address (required - at least one)
         self._add_address(company_elem, company)
@@ -203,8 +208,11 @@ class SAFTGenerator:
         ownership_elem = self._elem(header_elem, "Ownership")
         # IsPartOfGroup: 1=standalone, 2=parent, 3=subsidiary, 4=branch, 5=other
         self._elem(ownership_elem, "IsPartOfGroup", company.get('is_part_of_group', '1'))
-        self._elem(ownership_elem, "UltimateOwnerNameCyrillicBG", company.get('ultimate_owner_name', company['name']))
-        self._elem(ownership_elem, "UltimateOwnerUICBG", company['registration_number'])
+        self._elem(ownership_elem, "UltimateOwnerNameCyrillicBG", '00')
+        self._elem(ownership_elem, "UltimateOwnerUICBG", '00')
+        self._elem(ownership_elem, "UltimateOwnerNameCyrillicForeign", '00')
+        self._elem(ownership_elem, "UltimateOwnerNameLatinForeign", '00')
+        self._elem(ownership_elem, "CountryForeign", '00')
         
         # DefaultCurrencyCode - must be EUR per schema restriction
         self._elem(header_elem, "DefaultCurrencyCode", "EUR")
@@ -224,7 +232,7 @@ class SAFTGenerator:
         self._elem(header_elem, "TaxAccountingBasis", header.get('tax_accounting_basis', 'A'))
         
         # TaxEntity (optional)
-        self._elem(header_elem, "TaxEntity", "Company")
+        self._elem(header_elem, "TaxEntity", "Фирма")
     
     def _add_master_files(self, root: ET.Element, master_files: Dict, tax_codes: list):
         """Add MasterFilesMonthly section according to Bulgarian SAF-T schema"""
@@ -277,9 +285,8 @@ class SAFTGenerator:
             account_elem = self._elem(parent, "Account")
             self._elem(account_elem, "AccountID", str(account['account_id']))
             self._elem(account_elem, "AccountDescription", account['account_description'])
-            self._elem(account_elem, "TaxpayerAccountID", str(account['account_id']))
+            self._elem(account_elem, "TaxpayerAccountID", str(account.get('taxpayer_account_id', account['account_id'])))
             self._elem(account_elem, "AccountType", "Bifunctional")
-            self._elem(account_elem, "AccountCreationDate", "2020-01-01")
             
             self._add_balance(account_elem,
                             account.get('opening_debit_balance', 0.0),
@@ -314,7 +321,6 @@ class SAFTGenerator:
             self._elem(company_struct, "RegistrationNumber", customer.get('customer_tax_id', ''))
             self._add_company_name(company_struct, customer['company_name'])
             self._add_address(company_struct, customer.get('billing_address', {}))
-            self._add_contact(company_struct, customer.get('contact', {}))
             self._elem(customer_elem, "CustomerID", str(customer.get('customer_id', '')))
             self._elem(customer_elem, "AccountID", str(customer.get('account_id', '')))
             self._add_balance(customer_elem,

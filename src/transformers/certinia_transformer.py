@@ -65,8 +65,9 @@ class CertiniaTransformer:
         company_info = data.get('company', [{}])[0]
         saft_config = self.config['saft']
         
-        # Get company name in Cyrillic if available, otherwise use Latin name
-        company_name = company_info.get('FF_Name_cyrillic__c') or company_info.get('Name', saft_config.get('company_name', ''))
+        # Get company names - both Cyrillic and Latin
+        company_name = company_info.get('FF_Name_cyrillic__c')
+        company_name_latin = company_info.get('Name', '')
         
         # Get address fields with fallbacks
         street = company_info.get('F_Address_Cyrillic__c') or company_info.get('c2g__Street__c', '')
@@ -76,21 +77,27 @@ class CertiniaTransformer:
         
         # Get contact information
         telephone = company_info.get('c2g__Phone__c', '')
-        fax = company_info.get('c2g__Fax__c', '')
         email = company_info.get('c2g__ContactEmail__c', '')
         website = company_info.get('c2g__Website__c', '')
+        
+        # Get contact person details from Contact lookup
+        contact_record = company_info.get('Contact__r', {}) if isinstance(company_info.get('Contact__r'), dict) else {}
+        contact_first_name = contact_record.get('FirstName', '')
+        contact_last_name = contact_record.get('LastName', '')
+        contact_title = contact_record.get('Title', '')
         
         # Get registration numbers - prioritize SFocus_Company_Identification_Number__c
         registration_number = (company_info.get('SFocus_Company_Identification_Number__c') or 
                               company_info.get('c2g__TaxIdentificationNumber__c') or 
-                              saft_config.get('company_id', ''))
+                              '')
         
         tax_registration_number = (company_info.get('c2g__VATRegistrationNumber__c') or 
                                   company_info.get('c2g__TaxIdentificationNumber__c') or 
-                                  saft_config.get('tax_registration_number', ''))
+                                  '')
         
         # Get IBAN from related Bank Account
-        iban = company_info.get('c2g__BankAccount__r.c2g__IBANNumber__c', saft_config.get('iban', ''))
+        bank_account_record = company_info.get('c2g__BankAccount__r', {}) if isinstance(company_info.get('c2g__BankAccount__r'), dict) else {}
+        iban = bank_account_record.get('c2g__IBANNumber__c', '')
         
         return {
             'audit_file_version': '1.0',
@@ -102,15 +109,18 @@ class CertiniaTransformer:
             'company': {
                 'registration_number': registration_number,
                 'name': company_name,
+                'name_latin': company_name_latin,
                 'tax_registration_number': tax_registration_number,
                 'street': street,
                 'city': city,
                 'postal_code': postal_code,
                 'country': country,
                 'telephone': telephone,
-                'fax': fax,
                 'email': email,
                 'website': website,
+                'contact_first_name': contact_first_name,
+                'contact_last_name': contact_last_name,
+                'contact_title': contact_title,
                 'state_province': company_info.get('c2g__StateProvince__c', ''),
                 'iban': iban,
             },
@@ -148,6 +158,58 @@ class CertiniaTransformer:
             'previous_period_end': previous_period_end
         }
         return self._period_info_cache
+    
+    def _format_customer_supplier_id(self, tax_id: str, group: str, name: str, account_number: str) -> str:
+        """Format customer/supplier ID according to Bulgarian SAF-T rules using F_Group__c
+        
+        Rules based on F_Group__c field:
+        - CUS_Local or VEN_Local: 10 + registration number
+        - CUS_EU or VEN_EU: 11 + registration number
+        - CUS_ROW or VEN_ROW: 12 + registration number
+        - CUS_LOCAL + name ending with '_cus': 13 + registration number
+        - NAP service number (starts with 307): 16 + registration number
+        - No group/tax_id: 15 + account number (system-generated)
+        
+        Args:
+            tax_id: Tax/VAT registration number (may already include country code prefix)
+            group: F_Group__c field value (e.g., CUS_Local, VEN_EU, etc.)
+            name: Account name (to check for '_cus' suffix)
+            account_number: Fallback account number
+            
+        Returns:
+            Formatted customer/supplier ID
+        """
+        # Normalize inputs
+        tax_id = (tax_id or '').strip()
+        group = (group or '').strip()
+        name = (name or '').strip()
+        
+        # If no tax_id, return 15
+        if not tax_id:
+            return f"15{account_number or ''}"
+        
+        # Check for NAP service number (starts with 307) - has priority
+        if tax_id.startswith('307'):
+            return f"16{tax_id}"
+        
+        # Check for CUS_LOCAL with name ending in '_cus' -> 13
+        if group == 'CUS_Local' and name.lower().endswith('_cus'):
+            return f"13{tax_id}"
+        
+        # Local customers/vendors -> 10 (exact match: CUS_Local, VEN_Local)
+        if group in ('CUS_Local', 'VEN_Local'):
+            return f"10{tax_id}"
+        
+        # EU customers/vendors -> 11 (exact match: CUS_EU, VEN_EU)
+        if group in ('CUS_EU', 'VEN_EU'):
+            return f"11{tax_id}"
+        
+        # Rest of World customers/vendors -> 12 (exact match: CUS_RoW, VEN_RoW)
+        if group in ('CUS_RoW', 'VEN_RoW'):
+            return f"12{tax_id}"
+        
+        # If unrecognized group, use 15 + account number (system-generated)
+        return f"15{account_number or ''}"
     
     def _get_period_number(self, line: Dict) -> str:
         """Extract period number for comparison from period Name
@@ -227,9 +289,10 @@ class CertiniaTransformer:
 
         transformed = [
             {
-                'account_id': account.get('c2g__ReportingCode__c', account.get('Name')),
-                'account_description': account.get('Name', ''),
+                'account_id': account.get('c2g__StandardAccountID__c') or account.get('c2g__ReportingCode__c') or account.get('Name', ''),
+                'account_description': account.get('F_Bulgarian_GLA_Name__c', ''),
                 'account_type': account.get('c2g__Type__c', ''),
+                'taxpayer_account_id': account.get('c2g__ReportingCode__c') or account.get('Name', ''),
                 **account_balances.get(str(account.get('Id', '')), {
                     'opening_debit_balance': 0.0,
                     'closing_debit_balance': 0.0,
@@ -239,7 +302,7 @@ class CertiniaTransformer:
             }
             for account in gl_accounts
         ]
-        transformed.sort(key=lambda x: x['account_id'])
+        transformed.sort(key=lambda x: x['account_id'] or '')
         return transformed
     
     def _calculate_all_balances(self, transaction_lines: List[Dict], gl_account_codes: Dict[str, str] | None = None) -> tuple[Dict[str, Dict], Dict[str, Dict]]:
@@ -528,12 +591,22 @@ class CertiniaTransformer:
                 closing_credit_bal = max(0.0, -closing_net)
             
             # Cache frequently accessed fields
-            acc_number = acc.get('AccountNumber', acc.get('Id'))
+            acc_number = acc.get('AccountNumber', acc.get('Id', ''))
+            vat_registration = acc.get('c2g__CODAVATRegistrationNumber__c', '')
+            tax_id = acc.get('c2g__CODATaxpayerIdentificationNumber__c', '')
+            # Extract group name from lookup relationship
+            group_record = acc.get('F_Group__r', {})
+            group = group_record.get('Name', '') if isinstance(group_record, dict) else ''
+            name = acc.get('Name', '')
+            
+            # Extract GL account from lookup
+            ar_control = acc.get('c2g__CODAAccountsReceivableControl__r', {})
+            gl_account_id = ar_control.get('c2g__StandardAccountID__c', '') if isinstance(ar_control, dict) else ''
             
             transformed.append({
-                'customer_id': acc_number,
-                'account_id': acc.get('AccountNumber', ''),
-                'customer_tax_id': acc.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                'customer_id': self._format_customer_supplier_id(vat_registration or tax_id, group, name, acc_number),
+                'account_id': gl_account_id or acc.get('AccountNumber', ''),
+                'customer_tax_id': vat_registration or tax_id,
                 'company_name': acc.get('Name', ''),
                 'contact': {
                     'telephone': acc.get('Phone', ''),
@@ -670,12 +743,22 @@ class CertiniaTransformer:
                 closing_credit_bal = max(0.0, -closing_net)
             
             # Cache frequently accessed fields
-            acc_number = acc.get('AccountNumber', acc.get('Id'))
+            acc_number = acc.get('AccountNumber', acc.get('Id', ''))
+            vat_registration = acc.get('c2g__CODAVATRegistrationNumber__c', '')
+            tax_id = acc.get('c2g__CODATaxpayerIdentificationNumber__c', '')
+            # Extract group name from lookup relationship
+            group_record = acc.get('F_Group__r', {})
+            group = group_record.get('Name', '') if isinstance(group_record, dict) else ''
+            name = acc.get('Name', '')
+            
+            # Extract GL account from lookup
+            ap_control = acc.get('c2g__CODAAccountsPayableControl__r', {})
+            gl_account_id = ap_control.get('c2g__StandardAccountID__c', '') if isinstance(ap_control, dict) else ''
             
             transformed.append({
-                'supplier_id': acc_number,
-                'account_id': acc.get('AccountNumber', ''),
-                'supplier_tax_id': acc.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                'supplier_id': self._format_customer_supplier_id(vat_registration or tax_id, group, name, acc_number),
+                'account_id': gl_account_id or acc.get('AccountNumber', ''),
+                'supplier_tax_id': vat_registration or tax_id,
                 'company_name': acc.get('Name', ''),
                 'contact': {
                     'telephone': acc.get('Phone', ''),
