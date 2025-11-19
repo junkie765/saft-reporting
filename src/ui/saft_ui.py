@@ -8,17 +8,9 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 import json
 import os
-import sys
 import logging
 
-# Handle both relative and absolute imports
-if __name__ == "__main__" and __package__ is None:
-    # Running as script, add parent directory to path
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-    from src.salesforce.auth import get_authenticated_client
-else:
-    # Running as module
-    from ..salesforce.auth import get_authenticated_client
+from ..salesforce.auth import get_authenticated_client
 
 logger = logging.getLogger(__name__)
 
@@ -47,21 +39,19 @@ class SaftReportingUI:
         self.export_excel_var = tk.BooleanVar(value=False)
         self.selections_ready = False
         
-        # Authenticate once and cache the REST client
-        self.rest_client = None
+        # Authenticate and get REST client
         try:
             self.rest_client = get_authenticated_client(self.config)
-            logger.debug("UI: Authenticated with Salesforce")
         except Exception as e:
-            logger.error(f"Error authenticating with Salesforce: {e}")
-            error_msg = str(e)
-            if "401" in error_msg or "Unauthorized" in error_msg:
-                messagebox.showerror(
-                    "Authentication Failed",
-                    "Salesforce authentication failed.\n\nPlease check your OAuth credentials in config.json.\n\nSee OAUTH_SECRETS_SETUP.md for instructions."
-                )
+            logger.error(f"Authentication failed: {e}")
+            messagebox.showerror(
+                "Authentication Failed",
+                f"Failed to authenticate with Salesforce.\n\nError: {e}\n\nPlease check your OAuth credentials in config.json.\n\nSee OAUTH_SECRETS_SETUP.md for instructions."
+            )
+            root.destroy()
+            raise
         
-        # Fetch data from Salesforce using cached client
+        # Fetch data from Salesforce
         self.companies = self._fetch_companies()
         self.years, self.periods_by_year = self._fetch_periods_from_salesforce()
         self.available_periods = []
@@ -84,6 +74,32 @@ class SaftReportingUI:
         x = (self.root.winfo_screenwidth() // 2) - (width // 2)
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
+    
+    def _enable_arrow_navigation(self, combobox):
+        """Enable arrow key navigation in combobox dropdown"""
+        def on_arrow_key(event):
+            values = combobox['values']
+            if not values:
+                return
+            
+            current = combobox.get()
+            try:
+                current_index = values.index(current)
+            except (ValueError, AttributeError):
+                current_index = -1
+            
+            if event.keysym == 'Up':
+                new_index = max(0, current_index - 1)
+            elif event.keysym == 'Down':
+                new_index = min(len(values) - 1, current_index + 1)
+            else:
+                return
+            
+            combobox.set(values[new_index])
+            combobox.event_generate('<<ComboboxSelected>>')
+        
+        combobox.bind('<Up>', on_arrow_key)
+        combobox.bind('<Down>', on_arrow_key)
     
     def _fetch_companies(self):
         """Fetch accounting companies from Salesforce"""
@@ -202,6 +218,7 @@ class SaftReportingUI:
         )
         self.company_combo.grid(row=0, column=1, sticky="ew", pady=5)
         self.company_combo.bind('<<ComboboxSelected>>', self._on_company_change)
+        self._enable_arrow_navigation(self.company_combo)
         
         # Set default company from config or first in list
         default_company = self.config.get('saft', {}).get('company_name', '')
@@ -221,6 +238,7 @@ class SaftReportingUI:
         )
         self.report_type_combo.grid(row=1, column=1, sticky="ew", pady=5)
         self.report_type_combo.bind('<<ComboboxSelected>>', self._on_report_type_change)
+        self._enable_arrow_navigation(self.report_type_combo)
         
         # Year field - dropdown with Salesforce years
         ttk.Label(main_frame, text="Year:").grid(row=2, column=0, sticky=tk.W, pady=5)
@@ -233,6 +251,7 @@ class SaftReportingUI:
         )
         self.year_combo.grid(row=2, column=1, sticky="ew", pady=5)
         self.year_combo.bind('<<ComboboxSelected>>', self._on_year_change)
+        self._enable_arrow_navigation(self.year_combo)
         
         # Set default to current year if available
         if self.current_year in self.years:
@@ -250,6 +269,7 @@ class SaftReportingUI:
             width=23
         )
         self.month_combo.grid(row=3, column=1, sticky="ew", pady=5)
+        self._enable_arrow_navigation(self.month_combo)
         
         # Export to Excel checkbox
         self.export_excel_check = ttk.Checkbutton(

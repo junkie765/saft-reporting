@@ -41,6 +41,13 @@ class SAFTGenerator:
             elem.text = str(text)
         return elem
     
+    def _has_zero_balance(self, record: Dict) -> bool:
+        """Check if a record has zero balance (both opening and closing)"""
+        return (abs(record.get('opening_debit_balance', 0.0) + 
+                   record.get('opening_credit_balance', 0.0)) < 0.001 and
+                abs(record.get('closing_debit_balance', 0.0) + 
+                   record.get('closing_credit_balance', 0.0)) < 0.001)
+    
     def _add_address(self, parent: ET.Element, address: Dict, address_type: str = "StreetAddress"):
         """Add Address element with standard structure and validation"""
         if not isinstance(address, dict):
@@ -57,6 +64,20 @@ class SAFTGenerator:
         self._elem(addr_elem, "Country", str(address.get('country', 'BG')))
         self._elem(addr_elem, "AddressType", address_type)
         return addr_elem
+    
+    def _add_simple_address(self, parent: ET.Element, city: str = "", country: str = "BG"):
+        """Add simple Address element with minimal fields (for invoices/payments)"""
+        addr_elem = self._elem(parent, "Address")
+        self._elem(addr_elem, "City", city)
+        self._elem(addr_elem, "Country", country)
+        return addr_elem
+    
+    def _add_analysis(self, parent: ET.Element):
+        """Add empty Analysis element"""
+        analysis = self._elem(parent, "Analysis")
+        self._elem(analysis, "AnalysisType", "")
+        self._elem(analysis, "AnalysisID", "")
+        return analysis
     
     def _add_contact(self, parent: ET.Element, contact: Dict):
         """Add Contact element with standard structure and validation"""
@@ -79,9 +100,10 @@ class SAFTGenerator:
     
     def _add_balance(self, parent: ET.Element, opening_debit: float, opening_credit: float, 
                      closing_debit: float, closing_credit: float):
-        """Add balance elements following same-side rule (closing determines side)
+        """Add balance elements based on sign of each balance
         
-        Validates and formats balance values to ensure they are non-negative.
+        Rule: Positive balance → Debit, Negative balance → Credit
+        Each balance (opening and closing) is independently determined by its sign.
         """
         # Ensure all values are non-negative
         opening_debit = abs(opening_debit) if opening_debit else 0.0
@@ -89,11 +111,16 @@ class SAFTGenerator:
         closing_debit = abs(closing_debit) if closing_debit else 0.0
         closing_credit = abs(closing_credit) if closing_credit else 0.0
         
-        if closing_credit > 0:
+        # Add opening balance element based on which is populated
+        if opening_credit > 0:
             self._elem(parent, "OpeningCreditBalance", f"{opening_credit:.2f}")
-            self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
         else:
             self._elem(parent, "OpeningDebitBalance", f"{opening_debit:.2f}")
+        
+        # Add closing balance element based on which is populated
+        if closing_credit > 0:
+            self._elem(parent, "ClosingCreditBalance", f"{closing_credit:.2f}")
+        else:
             self._elem(parent, "ClosingDebitBalance", f"{closing_debit:.2f}")
     
     def generate(self, saft_data: Dict[str, Any], output_path: Path, 
@@ -231,12 +258,21 @@ class SAFTGenerator:
     def _add_general_ledger_accounts(self, parent: ET.Element, accounts: list):
         """
         Add GeneralLedgerAccount elements with balances following same-side rule
+        Skips accounts where both opening and closing balances are zero.
         
         Args:
             parent: Parent XML element
             accounts: List of GL accounts with calculated balances
         """
-        logger.info(f"Adding {len(accounts)} general ledger accounts...")
+        # Filter out accounts with zero balances
+        original_count = len(accounts)
+        accounts = [acc for acc in accounts if not self._has_zero_balance(acc)]
+        
+        if original_count > len(accounts):
+            logger.info(f"Adding {len(accounts)} general ledger accounts (filtered {original_count - len(accounts)} zero-balance accounts)...")
+        else:
+            logger.info(f"Adding {len(accounts)} general ledger accounts...")
+        
         for account in accounts:
             account_elem = self._elem(parent, "Account")
             self._elem(account_elem, "AccountID", str(account['account_id']))
@@ -254,12 +290,24 @@ class SAFTGenerator:
     def _add_customers(self, parent: ET.Element, customers: list):
         """
         Add Customer elements with CompanyStructure and balances
+        Skips customers where both opening and closing balances are zero.
         
         Args:
             parent: Parent XML element
             customers: List of customers with calculated balances
         """
-        logger.info(f"Adding {len(customers)} customers...")
+        # Filter out customers with zero balances
+        original_count = len(customers)
+        customers = [cust for cust in customers if not self._has_zero_balance(cust)]
+        
+        # Sort customers by company name
+        customers = sorted(customers, key=lambda c: c.get('company_name', ''))
+        
+        if original_count > len(customers):
+            logger.info(f"Adding {len(customers)} customers (filtered {original_count - len(customers)} zero-balance customers)...")
+        else:
+            logger.info(f"Adding {len(customers)} customers...")
+        
         for customer in customers:
             customer_elem = self._elem(parent, "Customer")
             company_struct = self._elem(customer_elem, "CompanyStructure")
@@ -278,12 +326,24 @@ class SAFTGenerator:
     def _add_suppliers(self, parent: ET.Element, suppliers: list):
         """
         Add Supplier elements with CompanyStructure and balances
+        Skips suppliers where both opening and closing balances are zero.
         
         Args:
             parent: Parent XML element
             suppliers: List of suppliers with calculated balances
         """
-        logger.info(f"Adding {len(suppliers)} suppliers...")
+        # Filter out suppliers with zero balances
+        original_count = len(suppliers)
+        suppliers = [supp for supp in suppliers if not self._has_zero_balance(supp)]
+        
+        # Sort suppliers by company name
+        suppliers = sorted(suppliers, key=lambda s: s.get('company_name', ''))
+        
+        if original_count > len(suppliers):
+            logger.info(f"Adding {len(suppliers)} suppliers (filtered {original_count - len(suppliers)} zero-balance suppliers)...")
+        else:
+            logger.info(f"Adding {len(suppliers)} suppliers...")
+        
         for supplier in suppliers:
             supplier_elem = self._elem(parent, "Supplier")
             company_struct = self._elem(supplier_elem, "CompanyStructure")
@@ -490,9 +550,7 @@ class SAFTGenerator:
             customer_elem = self._elem(inv_elem, "CustomerInfo")
             self._elem(customer_elem, "CustomerID", invoice['customer_id'])
             self._elem(customer_elem, "Name", invoice['customer_name'])
-            billing_addr = self._elem(customer_elem, "BillingAddress")
-            self._elem(billing_addr, "City", "")
-            self._elem(billing_addr, "Country", "BG")
+            self._add_simple_address(customer_elem)
             
             self._elem(inv_elem, "AccountID", "411")  # Revenue account
             self._elem(inv_elem, "BranchStoreNumber", "0")
@@ -508,9 +566,7 @@ class SAFTGenerator:
             self._elem(ship_to, "WarehouseID", "")
             self._elem(ship_to, "LocationID", "")
             self._elem(ship_to, "UCR", "")
-            addr = self._elem(ship_to, "Address")
-            self._elem(addr, "City", "")
-            self._elem(addr, "Country", "BG")
+            self._add_simple_address(ship_to)
             
             # ShipFrom
             ship_from = self._elem(inv_elem, "ShipFrom")
@@ -519,9 +575,7 @@ class SAFTGenerator:
             self._elem(ship_from, "WarehouseID", "")
             self._elem(ship_from, "LocationID", "")
             self._elem(ship_from, "UCR", "")
-            addr = self._elem(ship_from, "Address")
-            self._elem(addr, "City", "")
-            self._elem(addr, "Country", "BG")
+            self._add_simple_address(ship_from)
             
             self._elem(inv_elem, "PaymentTerms", "30")
             self._elem(inv_elem, "SelfBillingIndicator", "N")
@@ -537,11 +591,7 @@ class SAFTGenerator:
                 line_elem = self._elem(inv_elem, "InvoiceLine")
                 self._elem(line_elem, "LineNumber", line['line_number'])
                 self._elem(line_elem, "AccountID", line['account_id'])
-                
-                analysis = self._elem(line_elem, "Analysis")
-                self._elem(analysis, "AnalysisType", "")
-                self._elem(analysis, "AnalysisID", "")
-                
+                self._add_analysis(line_elem)
                 self._elem(line_elem, "OrderReferences", "")
                 self._elem(line_elem, "ShipTo", "")
                 self._elem(line_elem, "ShipFrom", "")
@@ -612,11 +662,7 @@ class SAFTGenerator:
                 self._elem(line_elem, "LineNumber", line['line_number'])
                 self._elem(line_elem, "SourceDocumentID", payment['system_id'])
                 self._elem(line_elem, "AccountID", line['account_id'])
-                
-                analysis = self._elem(line_elem, "Analysis")
-                self._elem(analysis, "AnalysisType", "")
-                self._elem(analysis, "AnalysisID", "")
-                
+                self._add_analysis(line_elem)
                 self._elem(line_elem, "CustomerID", line.get('customer_id', ''))
                 self._elem(line_elem, "SupplierID", "")
                 self._elem(line_elem, "TaxPointDate", payment['payment_date'])

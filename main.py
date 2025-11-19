@@ -8,8 +8,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from src.salesforce.rest_client import SalesforceRestClient
-from src.salesforce.auth import SalesforceAuth
 from src.transformers.certinia_transformer import CertiniaTransformer
 from src.saft.saft_generator import SAFTGenerator
 from src.utils.logger import setup_logger

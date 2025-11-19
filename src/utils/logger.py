@@ -3,10 +3,6 @@ import logging
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from colorlog import ColoredFormatter
 
 try:
     from colorlog import ColoredFormatter

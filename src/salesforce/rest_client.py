@@ -3,7 +3,7 @@ import logging
 import time
 import csv
 import io
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Any, Set
 import requests
 
@@ -19,29 +19,19 @@ class SalesforceRestClient:
         Initialize REST API client
         
         Args:
-            sf_session: Authenticated Salesforce session
+            sf_session: Authenticated Salesforce session from OAuth
             config: Configuration dictionary
         """
         self.sf_session = sf_session
         self.config = config
-        
-        # Get instance URL - handle both regular auth and session_id auth
-        if hasattr(sf_session, 'sf_instance') and sf_session.sf_instance:
-            self.instance_url = f"https://{sf_session.sf_instance}"
-        else:
-            # Fallback to config instance_url for session_id auth
-            self.instance_url = config['salesforce'].get('instance_url', 'https://scalefocus.my.salesforce.com')
-        
-        self.session_id = sf_session.session_id
+        self.instance_url = f"https://{sf_session.sf_instance}"
         self.api_version = config['salesforce']['api_version']
         self.base_url = f"{self.instance_url}/services/data/v{self.api_version}"
         
         self.headers = {
-            'Authorization': f'Bearer {self.session_id}',
+            'Authorization': f'Bearer {sf_session.session_id}',
             'Content-Type': 'application/json'
         }
-        
-        logger.debug(f"REST API initialized - Instance: {self.instance_url}, API: v{self.api_version}")
 
     def query_rest(self, soql_query: str, record_type: str = "records") -> List[Dict[str, Any]]:
         """
@@ -70,12 +60,10 @@ class SalesforceRestClient:
                 all_records.extend(result.get('records', []))
                 
                 # Handle pagination
-                url = result.get('nextRecordsUrl')
-                if url:
+                if url := result.get('nextRecordsUrl'):
                     url = f"{self.instance_url}{url}"
-                    params = None  # params are included in nextRecordsUrl
+                    params = None
             
-            logger.info(f"Retrieved {len(all_records)} {record_type}")
             return all_records
             
         except requests.exceptions.RequestException as e:
@@ -179,23 +167,17 @@ class SalesforceRestClient:
                     # Convert CSV row to match REST API nested structure
                     record = {}
                     for key, value in row.items():
-                        # Convert empty strings to None, skip if value is empty
-                        if value == '':
-                            value = None
+                        # Convert empty strings to None
+                        value = None if value == '' else value
                         
                         # Handle nested fields (e.g., "c2g__Transaction__r.c2g__Period__r.Name")
                         if '.' in key:
                             parts = key.split('.')
                             current = record
-                            
-                            # Build nested structure (use setdefault for cleaner code)
                             for part in parts[:-1]:
                                 current = current.setdefault(part, {})
-                            
-                            # Set final value
                             current[parts[-1]] = value
                         else:
-                            # Simple field
                             record[key] = value
                     
                     all_records.append(record)
@@ -419,15 +401,7 @@ class SalesforceRestClient:
         """
         
         # Use Bulk API v2 for large transaction line queries (600k+ records)
-        transaction_lines = self.query_bulk(transaction_line_query, "transaction line items for balance calculations")
-        
-        # Remove Salesforce metadata attributes
-        for record in transaction_lines:
-            record.pop('attributes', None)
-            if isinstance(record.get('c2g__Transaction__r'), dict):
-                record['c2g__Transaction__r'].pop('attributes', None)
-        
-        data['transaction_lines'] = transaction_lines
+        data['transaction_lines'] = self.query_bulk(transaction_line_query, "transaction line items for balance calculations")
         
         # Extract General Ledger Accounts
         if data['transaction_lines']:
@@ -459,15 +433,51 @@ class SalesforceRestClient:
         
         # Extract Accounts (Customers/Suppliers)
         if 'customers' in sections or 'suppliers' in sections:
-            account_query = f"""
-                SELECT Id, Name, AccountNumber, Type, BillingStreet, 
-                       BillingCity, BillingPostalCode, BillingCountry, Phone,
-                       c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
-                       c2g__CODAInvoiceEmail__c, RecordType.Name
-                FROM {objects_config['account']}
-                WHERE (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
-            """
-            data['accounts'] = self.query_rest(account_query, "accounts")
+            # Filter accounts that have transactions in the selected company
+            # Use transaction lines to identify relevant accounts
+            if data.get('transaction_lines'):
+                account_ids = {
+                    line['c2g__Account__c'] 
+                    for line in data['transaction_lines'] 
+                    if line.get('c2g__Account__c')
+                }
+                
+                if account_ids:
+                    # Batch the account IDs to avoid SOQL query length limits
+                    account_list = []
+                    batch_size = 200  # Safe batch size for IN clause
+                    account_ids_list = list(account_ids)
+                    
+                    for i in range(0, len(account_ids_list), batch_size):
+                        batch = account_ids_list[i:i + batch_size]
+                        acc_ids_str = "','".join(batch)
+                        account_query = f"""
+                            SELECT Id, Name, AccountNumber, Type, BillingStreet, 
+                                   BillingCity, BillingPostalCode, BillingCountry, Phone,
+                                   c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
+                                   c2g__CODAInvoiceEmail__c, RecordType.Name
+                            FROM {objects_config['account']}
+                            WHERE Id IN ('{acc_ids_str}')
+                              AND (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
+                        """
+                        batch_results = self.query_rest(account_query, f"accounts batch {i//batch_size + 1}")
+                        account_list.extend(batch_results)
+                    
+                    data['accounts'] = account_list
+                    logger.info(f"Filtered to {len(account_list)} accounts with transactions in selected company")
+                else:
+                    data['accounts'] = []
+            else:
+                # Fallback: fetch all accounts if no transaction lines
+                account_query = f"""
+                    SELECT Id, Name, AccountNumber, Type, BillingStreet, 
+                           BillingCity, BillingPostalCode, BillingCountry, Phone,
+                           c2g__CODATaxpayerIdentificationNumber__c, Fax, Website,
+                           c2g__CODAInvoiceEmail__c, RecordType.Name
+                    FROM {objects_config['account']}
+                    WHERE (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
+                """
+                data['accounts'] = self.query_rest(account_query, "accounts")
         else:
             data['accounts'] = []
         
