@@ -163,10 +163,10 @@ class CertiniaTransformer:
         """Format customer/supplier ID according to Bulgarian SAF-T rules using F_Group__c
         
         Rules based on F_Group__c field:
-        - CUS_Local or VEN_Local: 10 + registration number
-        - CUS_EU or VEN_EU: 11 + registration number
-        - CUS_ROW or VEN_ROW: 12 + registration number
-        - CUS_LOCAL + name ending with '_cus': 13 + registration number
+        - CUS_Local or VEN_Local: 10 + registration number (or account_number if no tax_id)
+        - CUS_EU or VEN_EU: 11 + registration number (or account_number if no tax_id)
+        - CUS_ROW or VEN_ROW: 12 + registration number (or account_number if no tax_id)
+        - CUS_LOCAL + name ending with '_cus': 13 + registration number (or account_number if no tax_id)
         - NAP service number (starts with 307): 16 + registration number
         - No group/tax_id: 15 + account number (system-generated)
         
@@ -184,32 +184,31 @@ class CertiniaTransformer:
         group = (group or '').strip()
         name = (name or '').strip()
         
-        # If no tax_id, return 15
-        if not tax_id:
-            return f"15{account_number or ''}"
+        # Use tax_id if available, otherwise fallback to account_number
+        identifier = tax_id or account_number or ''
         
         # Check for NAP service number (starts with 307) - has priority
-        if tax_id.startswith('307'):
+        if tax_id and tax_id.startswith('307'):
             return f"16{tax_id}"
         
         # Check for CUS_LOCAL with name ending in '_cus' -> 13
         if group == 'CUS_Local' and name.lower().endswith('_cus'):
-            return f"13{tax_id}"
+            return f"13{identifier}"
         
         # Local customers/vendors -> 10 (exact match: CUS_Local, VEN_Local)
         if group in ('CUS_Local', 'VEN_Local'):
-            return f"10{tax_id}"
+            return f"10{identifier}"
         
         # EU customers/vendors -> 11 (exact match: CUS_EU, VEN_EU)
         if group in ('CUS_EU', 'VEN_EU'):
-            return f"11{tax_id}"
+            return f"11{identifier}"
         
         # Rest of World customers/vendors -> 12 (exact match: CUS_RoW, VEN_RoW)
         if group in ('CUS_RoW', 'VEN_RoW'):
-            return f"12{tax_id}"
+            return f"12{identifier}"
         
-        # If unrecognized group, use 15 + account number (system-generated)
-        return f"15{account_number or ''}"
+        # If unrecognized group, use 15 + identifier (system-generated)
+        return f"15{identifier}"
     
     def _get_period_number(self, line: Dict) -> str:
         """Extract period number for comparison from period Name
@@ -608,12 +607,6 @@ class CertiniaTransformer:
                 'account_id': gl_account_id or acc.get('AccountNumber', ''),
                 'customer_tax_id': vat_registration or tax_id,
                 'company_name': acc.get('Name', ''),
-                'contact': {
-                    'telephone': acc.get('Phone', ''),
-                    'fax': acc.get('Fax', ''),
-                    'email': acc.get('c2g__CODAInvoiceEmail__c', ''),
-                    'website': acc.get('Website', '')
-                },
                 'billing_address': {
                     'street_name': acc.get('BillingStreet', ''),
                     'city': acc.get('BillingCity', ''),
@@ -744,7 +737,7 @@ class CertiniaTransformer:
             
             # Cache frequently accessed fields
             acc_number = acc.get('AccountNumber', acc.get('Id', ''))
-            vat_registration = acc.get('c2g__CODAVATRegistrationNumber__c', '')
+            vat_registration = acc.get('fferpcore__VatRegistrationNumber__c', '')
             tax_id = acc.get('c2g__CODATaxpayerIdentificationNumber__c', '')
             # Extract group name from lookup relationship
             group_record = acc.get('F_Group__r', {})
@@ -1124,8 +1117,8 @@ class CertiniaTransformer:
                     tax_rate = self._parse_decimal(tax_rates[0].get('c2g__Rate__c', 0))
             
             transformed.append({
-                'tax_type': 'ДДС',
-                'tax_code': tax_code.get('Name', 'STD'),
+                'tax_type': '100',
+                'tax_code': tax_code.get('c2g__StandardCodeID__c', 'STD'),
                 'description': tax_code.get('c2g__Description__c', ''),
                 'tax_percentage': tax_rate
             })
@@ -1137,11 +1130,9 @@ class CertiniaTransformer:
         return [
             {
                 'product_code': product.get('ProductCode', ''),
-                'goods_services_id': '01',
-                'product_group': product.get('Family', ''),
+                'goods_services_id': '02',
                 'description': product.get('Name', ''),
                 'product_commodity_code': '0',
-                'product_number_code': product.get('ProductCode', ''),
                 'uom_base': 'HUR',
                 'uom_standard': 'ЧАС',
                 'uom_conversion_factor': '1',

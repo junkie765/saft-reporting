@@ -455,7 +455,7 @@ class SalesforceRestClient:
                         account_query = f"""
                             SELECT Id, Name, AccountNumber, Type, BillingStreet, 
                                    BillingCity, BillingPostalCode, BillingCountry, Phone,
-                                   c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c,
+                                   c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c, fferpcore__VatRegistrationNumber__c, 
                                    c2g__CODAECCountryCode__c, F_Group__r.Name, Fax, Website, c2g__CODAInvoiceEmail__c, RecordType.Name,
                                    c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
                                    c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c
@@ -496,7 +496,7 @@ class SalesforceRestClient:
         
         # Extract Tax Codes with Rates
         tax_code_query = f"""
-            SELECT Id, Name, c2g__Description__c,
+            SELECT Id, Name, c2g__Description__c, c2g__StandardCodeID__c,
                    (SELECT c2g__Rate__c, c2g__StartDate__c 
                     FROM c2g__TaxRates__r 
                     WHERE c2g__StartDate__c <= {end_str}

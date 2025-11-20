@@ -467,19 +467,16 @@ class SAFTGenerator:
     def _add_tax_table(self, parent: ET.Element, tax_codes: list):
         """Add TaxTable with tax codes from Salesforce"""
         if not tax_codes:
+            logger.warning("No tax codes found in Salesforce - TaxTable will be empty")
+            return
+        
+        for tax_code in tax_codes:
             tax_entry = self._elem(parent, "TaxTableEntry")
-            self._elem(tax_entry, "TaxType", "ДДС")
-            self._elem(tax_entry, "TaxCode", "STD")
-            self._elem(tax_entry, "TaxPercentage", "20.00")
-            self._elem(tax_entry, "Description", "Стандартна ставка на ДДС")
-        else:
-            for tax_code in tax_codes:
-                tax_entry = self._elem(parent, "TaxTableEntry")
-                self._elem(tax_entry, "TaxType", tax_code.get('tax_type', 'ДДС'))
-                self._elem(tax_entry, "TaxCode", tax_code.get('tax_code', 'STD'))
-                self._elem(tax_entry, "TaxPercentage", f"{tax_code.get('tax_percentage', 0):.2f}")
-                if tax_code.get('description'):
-                    self._elem(tax_entry, "Description", tax_code['description'])
+            self._elem(tax_entry, "TaxType", tax_code.get('tax_type', '100'))
+            self._elem(tax_entry, "TaxCode", tax_code.get('tax_code', 'STD'))
+            self._elem(tax_entry, "TaxPercentage", f"{tax_code.get('tax_percentage', 0):.2f}")
+            if tax_code.get('description'):
+                self._elem(tax_entry, "Description", tax_code['description'])
     
     def _add_uom_table(self, parent: ET.Element):
         """Add UOMTable with basic units of measure"""
@@ -503,13 +500,8 @@ class SAFTGenerator:
             product = self._elem(parent, "Product")
             self._elem(product, "ProductCode", prod['product_code'])
             self._elem(product, "GoodsServicesID", prod['goods_services_id'])
-            
-            if prod.get('product_group'):
-                self._elem(product, "ProductGroup", prod['product_group'])
-            
             self._elem(product, "Description", prod['description'])
             self._elem(product, "ProductCommodityCode", prod['product_commodity_code'])
-            self._elem(product, "ProductNumberCode", prod['product_number_code'])
             self._elem(product, "UOMBase", prod['uom_base'])
             self._elem(product, "UOMStandard", prod['uom_standard'])
             self._elem(product, "UOMToUOMBaseConversionFactor", prod['uom_conversion_factor'])
