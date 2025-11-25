@@ -502,7 +502,7 @@ class SalesforceRestClient:
                     WHERE c2g__StartDate__c <= {end_str}
                     ORDER BY c2g__StartDate__c DESC
                     LIMIT 1)
-            FROM c2g__codaTaxCode__c
+            FROM c2g__codaTaxCode__c WHERE c2g__StandardCodeID__c != null
         """
         data['tax_codes'] = self.query_rest(tax_code_query, "tax codes")
         
