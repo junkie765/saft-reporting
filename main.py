@@ -117,7 +117,7 @@ def validate_dates(start_date: str, end_date: str) -> tuple:
         sys.exit(1)
 
 
-def build_output_filename(config: dict, start_date: datetime, end_date: datetime, extension: str = 'xml', prefix: str = '') -> str:
+def build_output_filename(config: dict, start_date: datetime, extension: str = 'xml', prefix: str = '') -> str:
     """
     Build output filename using consistent pattern
     
@@ -132,16 +132,14 @@ def build_output_filename(config: dict, start_date: datetime, end_date: datetime
         Formatted filename string
     """
     company_id = config['saft']['company_id']
-    date_parts = f"{start_date.year}_{start_date.strftime('%m')}_{end_date.year}_{end_date.strftime('%m')}"
+    date_parts = f"{start_date.strftime('%m')}_{start_date.year}"
     
     if extension == 'xml':
         # Use pattern from config for XML files
         return config['output']['filename_pattern'].format(
             company_id=company_id,
-            start_year=start_date.year,
             start_month=start_date.strftime('%m'),
-            end_year=end_date.year,
-            end_month=end_date.strftime('%m')
+            start_year=start_date.year
         )
     else:
         # Use consistent pattern for other file types
@@ -267,7 +265,7 @@ def main():
             else:
                 output_dir = Path(config['output']['directory'])
                 output_dir.mkdir(exist_ok=True)
-                output_path = output_dir / build_output_filename(config, start_date, end_date, 'xml')
+                output_path = output_dir / build_output_filename(config, start_date, 'xml')
             
             generator.generate(saft_data, output_path, start_date, end_date)
             step_duration = time.time() - step_start
@@ -279,10 +277,10 @@ def main():
                 step_start = time.time()
                 excel_exporter = ExcelExporter()
                 output_dir = Path(config['output']['directory'])
-                excel_path = output_dir / build_output_filename(config, start_date, end_date, 'xlsx', 'Certinia_Data_')
+                excel_path = output_dir / build_output_filename(config, start_date, 'xlsx', 'Certinia_Data_')
                 
                 # Export both raw and transformed data
-                excel_exporter.export(certinia_data, excel_path, start_date, end_date, saft_data)
+                excel_exporter.export(certinia_data, excel_path, start_date, saft_data)
                 step_duration = time.time() - step_start
                 logger.info(f"✓ Excel file generated: {excel_path} (took {step_duration:.2f}s)")
             
@@ -291,7 +289,7 @@ def main():
             minutes = int(total_duration // 60)
             seconds = int(total_duration % 60)
             
-            # Summary
+            # Summaryd
             logger.info("=" * 80)
             logger.info("Export completed successfully!", extra={'level': 'SUCCESS'})
             logger.info(f"SAF-T XML file: {output_path.absolute()}")

@@ -143,7 +143,7 @@ class ExcelExporter:
         logger.info(f"Prepared {len(df)} rows for hierarchical sheet: {sheet_name}")
         return df
     
-    def export(self, data: Dict[str, List], output_path: Path, start_date: datetime, end_date: datetime, saft_data: Dict | None = None):
+    def export(self, data: Dict[str, List], output_path: Path, start_date: datetime, saft_data: Dict | None = None):
         """
         Export data to Excel file with multiple sheets
         
@@ -151,7 +151,6 @@ class ExcelExporter:
             data: Dictionary containing all extracted data (raw data)
             output_path: Path for the output Excel file
             start_date: Start date of extraction period
-            end_date: End date of extraction period
             saft_data: Optional transformed/calculated SAF-T data
         """
         logger.info(f"Exporting data to Excel: {output_path}")
@@ -162,7 +161,6 @@ class ExcelExporter:
             summary_data = {
                 'Extraction Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
                 'Period Start': [start_date.strftime('%Y-%m-%d')],
-                'Period End': [end_date.strftime('%Y-%m-%d')],
                 'Company': [data.get('company', [{}])[0].get('Name', 'N/A') if data.get('company') else 'N/A']
             }
             

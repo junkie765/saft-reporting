@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
 from lxml import etree as ET
+import pycountry
 
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,16 @@ class SAFTGenerator:
     
     # SAF-T Bulgaria namespace - Official Bulgarian schema
     NAMESPACE = "mf:nra:dgti:dxxxx:declaration:v1"
+    LEGACY_COUNTRY_NAMES = {
+        'turkey': 'Türkiye',
+        'czech republic': 'Czechia',
+        'swaziland': 'Eswatini',
+    }
+    COUNTRY_CODE_ALIASES = {
+        'GREAT BRITAIN': 'GB',
+        'UK': 'GB',
+        'USA': 'US',
+    }
     
     def __init__(self, config: dict):
         """
@@ -47,6 +58,43 @@ class SAFTGenerator:
                    record.get('opening_credit_balance', 0.0)) < 0.001 and
                 abs(record.get('closing_debit_balance', 0.0) + 
                    record.get('closing_credit_balance', 0.0)) < 0.001)
+
+    def _normalize_country_code(self, country: Optional[str]) -> str:
+        """Convert country names to ISO alpha-2 codes expected by the BG SAF-T XSD."""
+        if not country:
+            return "BG"
+
+        normalized = str(country).strip()
+        if not normalized:
+            return "BG"
+
+        normalized = self.LEGACY_COUNTRY_NAMES.get(normalized.lower(), normalized)
+        normalized_upper = normalized.upper()
+
+        alias_match = self.COUNTRY_CODE_ALIASES.get(normalized_upper)
+        if alias_match:
+            return alias_match
+
+        if len(normalized) == 2 and normalized.isalpha():
+            return normalized_upper
+
+        direct_match = pycountry.countries.get(name=normalized)
+        if direct_match:
+            return direct_match.alpha_2
+
+        search_term = normalized.replace('.', ' ')
+
+        try:
+            return pycountry.countries.search_fuzzy(search_term)[0].alpha_2
+        except LookupError:
+            return normalized
+
+    def _truncate_text(self, value: Optional[str], max_length: int) -> str:
+        """Trim text values to the maximum length allowed by the XSD."""
+        if value is None:
+            return ""
+
+        return str(value)[:max_length]
     
     def _add_address(self, parent: ET.Element, address: Dict, address_type: str = "StreetAddress"):
         """Add Address element with standard structure and validation"""
@@ -54,18 +102,18 @@ class SAFTGenerator:
             address = {}
         
         addr_elem = self._elem(parent, "Address")
-        self._elem(addr_elem, "StreetName", str(address.get('street_name', address.get('street', ''))))
+        self._elem(addr_elem, "StreetName", self._truncate_text(address.get('street_name', address.get('street', '')), 70))
         self._elem(addr_elem, "City", str(address.get('city', '')))
         self._elem(addr_elem, "PostalCode", str(address.get('postal_code', '')))
-        self._elem(addr_elem, "Country", str(address.get('country', 'BG')))
+        self._elem(addr_elem, "Country", self._normalize_country_code(address.get('country', 'BG')))
         self._elem(addr_elem, "AddressType", address_type)
         return addr_elem
     
-    def _add_simple_address(self, parent: ET.Element, city: str = "", country: str = "BG"):
-        """Add simple Address element with minimal fields (for invoices/payments)"""
-        addr_elem = self._elem(parent, "Address")
+    def _add_simple_address(self, parent: ET.Element, city: str = "", country: str = "BG", element_name: str = "Address"):
+        """Add a minimal address element for invoice-related structures."""
+        addr_elem = self._elem(parent, element_name)
         self._elem(addr_elem, "City", city)
-        self._elem(addr_elem, "Country", country)
+        self._elem(addr_elem, "Country", self._normalize_country_code(country))
         return addr_elem
     
     def _add_analysis(self, parent: ET.Element):
@@ -81,19 +129,30 @@ class SAFTGenerator:
             contact = {}
         
         contact_elem = self._elem(parent, "Contact")
-        
-        # Add contact person details if available
-        if contact.get('contact_first_name'):
-            self._elem(contact_elem, "ContactPerson", "")
-            self._elem(contact_elem, "FirstName", str(contact.get('contact_first_name', '')))
-            self._elem(contact_elem, "FamilyName", str(contact.get('contact_last_name', '')))
-            if contact.get('contact_title'):
-                self._elem(contact_elem, "Title", str(contact.get('contact_title', '')))
+
+        # ContactPerson is mandatory and must wrap the name fields.
+        first_name = str(contact.get('contact_first_name') or contact.get('name') or 'Unknown')
+        last_name = str(contact.get('contact_last_name') or 'Contact')
+        contact_title = str(contact.get('contact_title') or contact.get('title') or 'Contact')
+
+        contact_person = self._elem(contact_elem, "ContactPerson")
+        self._elem(contact_person, "FirstName", first_name)
+        self._elem(contact_person, "LastName", last_name)
+        self._elem(contact_person, "OtherTitles", self._truncate_text(contact_title, 35))
         
         self._elem(contact_elem, "Telephone", str(contact.get('telephone', '')))
         self._elem(contact_elem, "Email", str(contact.get('email', '')))
         self._elem(contact_elem, "Website", str(contact.get('website', '')))
         return contact_elem
+
+    def _add_tax_registration(self, parent: ET.Element, tax_registration_number: str):
+        """Add TaxRegistration when a company tax number is available."""
+        if not tax_registration_number:
+            return None
+
+        tax_reg_elem = self._elem(parent, "TaxRegistration")
+        self._elem(tax_reg_elem, "TaxRegistrationNumber", str(tax_registration_number))
+        return tax_reg_elem
     
     def _add_company_name(self, parent: ET.Element, name: str):
         """Add company name in appropriate format (Cyrillic or Latin)"""
@@ -161,12 +220,13 @@ class SAFTGenerator:
         
         # Write with pretty print
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        tree.write(
-            str(output_path),
-            encoding='UTF-8',
-            xml_declaration=True,
-            pretty_print=True
-        )
+        with output_path.open('wb') as output_file:
+            tree.write(
+                output_file,
+                encoding='UTF-8',
+                xml_declaration=True,
+                pretty_print=True
+            )
         
     def _add_header(self, root: ET.Element, header: Dict, start_date: datetime, end_date: datetime):
         """Add Header section according to Bulgarian SAF-T schema"""
@@ -185,7 +245,6 @@ class SAFTGenerator:
         company = header['company']
         self._elem(company_elem, "RegistrationNumber", company['registration_number'])
         self._elem(company_elem, "Name", company['name'])
-        self._elem(company_elem, "NameLatin", company['name_latin'])
         
         # Address (required - at least one)
         self._add_address(company_elem, company)
@@ -285,7 +344,7 @@ class SAFTGenerator:
             account_elem = self._elem(parent, "Account")
             self._elem(account_elem, "AccountID", str(account['account_id']))
             self._elem(account_elem, "AccountDescription", account['account_description'])
-            self._elem(account_elem, "TaxpayerAccountID", str(account.get('taxpayer_account_id', account['account_id'])))
+            self._elem(account_elem, "TaxpayerAccountID", str(account['account_id']))
             self._elem(account_elem, "AccountType", "Bifunctional")
             
             self._add_balance(account_elem,
@@ -321,6 +380,8 @@ class SAFTGenerator:
             self._elem(company_struct, "RegistrationNumber", customer.get('customer_tax_id', ''))
             self._add_company_name(company_struct, customer['company_name'])
             self._add_address(company_struct, customer.get('billing_address', {}))
+            self._add_tax_registration(company_struct, customer.get('customer_tax_id', ''))
+            self._elem(company_struct, "RelatedParty", customer.get('related_party', 'N'))
             self._elem(customer_elem, "CustomerID", str(customer.get('customer_id', '')))
             self._elem(customer_elem, "AccountID", str(customer.get('account_id', '')))
             self._add_balance(customer_elem,
@@ -357,6 +418,8 @@ class SAFTGenerator:
             self._add_company_name(company_struct, supplier['company_name'])
             self._add_address(company_struct, supplier.get('billing_address', {}))
             self._add_contact(company_struct, supplier.get('contact', {}))
+            self._add_tax_registration(company_struct, supplier.get('supplier_tax_id', ''))
+            self._elem(company_struct, "RelatedParty", supplier.get('related_party', 'N'))
             self._elem(supplier_elem, "SupplierID", str(supplier.get('supplier_id', '')))
             self._elem(supplier_elem, "AccountID", str(supplier.get('account_id', '')))
             self._add_balance(supplier_elem,
@@ -400,9 +463,9 @@ class SAFTGenerator:
         """Add a Journal entry according to Bulgarian SAF-T schema"""
         journal_elem = self._elem(parent, "Journal")
         
-        self._elem(journal_elem, "JournalID", "GL")
-        self._elem(journal_elem, "Description", entry.get('description', 'General Ledger'))
-        self._elem(journal_elem, "Type", "GLEntry")
+        self._elem(journal_elem, "JournalID", entry.get('journal_id', 'GL'))
+        self._elem(journal_elem, "Description", entry.get('journal_description', ''))
+        self._elem(journal_elem, "Type", entry.get('type', 'General'))
         
         # Transaction
         trans_elem = self._elem(journal_elem, "Transaction")
@@ -439,9 +502,7 @@ class SAFTGenerator:
             self._elem(line_elem, "CustomerID", line.get('customer_id', '0'))
             self._elem(line_elem, "SupplierID", line.get('supplier_id', '0'))
             
-            # Description
-            if line.get('description'):
-                self._elem(line_elem, "Description", line['description'])
+            self._elem(line_elem, "Description", line.get('description', ''))
             
             # Per Bulgarian SAF-T schema: MUST have either DebitAmount OR CreditAmount (xs:choice)
             currency = line.get('currency_code', 'BGN')
@@ -473,10 +534,20 @@ class SAFTGenerator:
         for tax_code in tax_codes:
             tax_entry = self._elem(parent, "TaxTableEntry")
             self._elem(tax_entry, "TaxType", tax_code.get('tax_type', '100'))
-            self._elem(tax_entry, "TaxCode", tax_code.get('tax_code', 'STD'))
-            self._elem(tax_entry, "TaxPercentage", f"{tax_code.get('tax_percentage', 0):.2f}")
+            self._elem(tax_entry, "Description", tax_code.get('description', tax_code.get('tax_type', 'Tax')))
+
+            tax_code_details = self._elem(tax_entry, "TaxCodeDetails")
+            self._elem(tax_code_details, "TaxCode", tax_code.get('tax_code', 'STD'))
             if tax_code.get('description'):
-                self._elem(tax_entry, "Description", tax_code['description'])
+                self._elem(tax_code_details, "Description", tax_code['description'])
+            tax_percentage = tax_code.get('tax_percentage', 0)
+            self._elem(tax_code_details, "TaxPercentage", f"{tax_percentage:.2f}")
+            base_rate = tax_code.get('base_rate', tax_percentage)
+            if base_rate is not None:
+                if base_rate > 1:
+                    base_rate = base_rate / 100
+                self._elem(tax_code_details, "BaseRate", f"{base_rate:.2f}")
+            self._elem(tax_code_details, "Country", tax_code.get('country', 'BG'))
     
     def _add_uom_table(self, parent: ET.Element):
         """Add UOMTable with basic units of measure"""
@@ -548,7 +619,7 @@ class SAFTGenerator:
             customer_elem = self._elem(inv_elem, "CustomerInfo")
             self._elem(customer_elem, "CustomerID", invoice['customer_id'])
             self._elem(customer_elem, "Name", invoice['customer_name'])
-            self._add_simple_address(customer_elem)
+            self._add_simple_address(customer_elem, element_name="BillingAddress")
             
             self._elem(inv_elem, "AccountID", "411")  # Revenue account
             self._elem(inv_elem, "BranchStoreNumber", "0")
@@ -596,7 +667,6 @@ class SAFTGenerator:
                 self._elem(line_elem, "GoodsServicesID", "01")
                 self._elem(line_elem, "ProductCode", line['product_code'])
                 self._elem(line_elem, "ProductDescription", line['product_description'])
-                
                 delivery = self._elem(line_elem, "Delivery")
                 self._elem(delivery, "DeliveryDate", invoice['invoice_date'])
                 
@@ -702,56 +772,72 @@ class SAFTGenerator:
             invoice_elem = self._elem(parent, "Invoice")
             
             self._elem(invoice_elem, "InvoiceNo", invoice.get('invoice_no', ''))
-            self._elem(invoice_elem, "InvoiceDate", invoice.get('invoice_date', ''))
-            self._elem(invoice_elem, "InvoiceType", "FT")  # Standard invoice
-            self._elem(invoice_elem, "Period", str(invoice.get('period', '')))
-            self._elem(invoice_elem, "PeriodYear", str(invoice.get('period_year', '')))
-            self._elem(invoice_elem, "GLPostingDate", invoice.get('gl_posting_date', ''))
-            
-            # Supplier info
+
             supplier_info = self._elem(invoice_elem, "SupplierInfo")
             self._elem(supplier_info, "SupplierID", invoice.get('supplier_id', ''))
-            self._elem(supplier_info, "SupplierName", invoice.get('supplier_name', ''))
+            self._elem(supplier_info, "Name", invoice.get('supplier_name', ''))
+            self._add_simple_address(supplier_info, element_name="BillingAddress")
+
+            self._elem(invoice_elem, "AccountID", invoice.get('account_id', ''))
+            self._elem(invoice_elem, "BranchStoreNumber", "0")
+            self._elem(invoice_elem, "Period", str(invoice.get('period', '')))
+            self._elem(invoice_elem, "PeriodYear", str(invoice.get('period_year', '')))
+
+            self._elem(invoice_elem, "InvoiceDate", invoice.get('invoice_date', ''))
+            self._elem(invoice_elem, "InvoiceType", "FT")  # Standard invoice
+            self._elem(invoice_elem, "PaymentTerms", "30")
+            self._elem(invoice_elem, "SelfBillingIndicator", "N")
+            self._elem(invoice_elem, "SourceID", "Certinia")
+            self._elem(invoice_elem, "GLPostingDate", invoice.get('gl_posting_date', ''))
+            self._elem(invoice_elem, "BatchID", "0")
+            self._elem(invoice_elem, "SystemID", invoice.get('system_id', ''))
+            self._elem(invoice_elem, "TransactionID", invoice.get('invoice_no', ''))
+            self._elem(invoice_elem, "ReceiptNumbers", "")
             
             # Lines
             for line in invoice.get('lines', []):
-                line_elem = self._elem(invoice_elem, "Line")
+                line_elem = self._elem(invoice_elem, "InvoiceLine")
                 
                 self._elem(line_elem, "LineNumber", line.get('line_number', ''))
-                
-                if line.get('account_id'):
-                    self._elem(line_elem, "AccountID", line.get('account_id', ''))
-                
-                if line.get('product_code'):
-                    self._elem(line_elem, "ProductCode", line.get('product_code', ''))
-                
+
+                self._elem(line_elem, "AccountID", line.get('account_id', ''))
+
+                product_code = line.get('product_code') or line.get('account_id') or f"LINE-{line.get('line_number', '')}"
+                self._elem(line_elem, "ProductCode", product_code)
+
                 if line.get('product_description'):
                     self._elem(line_elem, "ProductDescription", line.get('product_description', ''))
-                
+
                 self._elem(line_elem, "Quantity", f"{line.get('quantity', 0):.2f}")
+                self._elem(line_elem, "InvoiceUOM", "HUR")
+                self._elem(line_elem, "UOMToUOMBaseConversionFactor", "1")
                 self._elem(line_elem, "UnitPrice", f"{line.get('unit_price', 0):.2f}")
-                
-                # Amount with proper debit/credit handling
+                self._elem(line_elem, "TaxPointDate", invoice.get('invoice_date', ''))
+                self._elem(line_elem, "Description", line.get('description', ''))
+
                 line_amount = line.get('line_amount', 0)
+
+                line_amount_elem = self._elem(line_elem, "InvoiceLineAmount")
+                self._elem(line_amount_elem, "Amount", f"{line_amount:.2f}")
+                self._elem(line_amount_elem, "CurrencyCode", "BGN")
+                self._elem(line_amount_elem, "CurrencyAmount", f"{line_amount:.2f}")
+
                 indicator = line.get('debit_credit_indicator', 'D')
-                
-                if indicator == 'D':
-                    debit_elem = self._elem(line_elem, "DebitAmount")
-                    self._elem(debit_elem, "Amount", f"{line_amount:.2f}")
-                    self._elem(debit_elem, "CurrencyCode", "BGN")
-                else:
-                    credit_elem = self._elem(line_elem, "CreditAmount")
-                    self._elem(credit_elem, "Amount", f"{line_amount:.2f}")
-                    self._elem(credit_elem, "CurrencyCode", "BGN")
-                
-                if line.get('tax_amount', 0) > 0:
-                    self._elem(line_elem, "TaxAmount", f"{line.get('tax_amount', 0):.2f}")
-                
-                if line.get('description'):
-                    self._elem(line_elem, "Description", line.get('description', ''))
+                self._elem(line_elem, "DebitCreditIndicator", indicator)
+
+                tax_value = float(line.get('tax_amount', 0) or 0)
+                tax_info = self._elem(line_elem, "TaxInformation")
+                self._elem(tax_info, "TaxType", "100010")
+                self._elem(tax_info, "TaxCode", "110010")
+                if tax_value > 0:
+                    self._elem(tax_info, "TaxPercentage", "20.00")
+                    self._elem(tax_info, "TaxBase", f"{line_amount:.2f}")
+                tax_amount = self._elem(tax_info, "TaxAmount")
+                self._elem(tax_amount, "Amount", f"{tax_value:.2f}")
+                self._elem(tax_amount, "CurrencyCode", "BGN")
+                self._elem(tax_amount, "CurrencyAmount", f"{tax_value:.2f}")
             
             # Document totals
-            doc_totals = self._elem(invoice_elem, "DocumentTotals")
-            self._elem(doc_totals, "TaxPayable", f"{sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")
+            doc_totals = self._elem(invoice_elem, "InvoiceDocumentTotals")
             self._elem(doc_totals, "NetTotal", f"{invoice.get('total_debit', 0):.2f}")
             self._elem(doc_totals, "GrossTotal", f"{invoice.get('total_debit', 0) + sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")

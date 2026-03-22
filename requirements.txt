@@ -20,3 +20,4 @@ python-dateutil==2.8.2
 
 # Utilities
 pyyaml==6.0.1
+pycountry==24.6.1

@@ -73,7 +73,7 @@ class CertiniaTransformer:
         street = company_info.get('F_Address_Cyrillic__c') or company_info.get('c2g__Street__c', '')
         city = company_info.get('F_City_Cyrillic__c') or company_info.get('c2g__City__c', '')
         postal_code = company_info.get('c2g__ZipPostCode__c', '')
-        country = company_info.get('c2g__Country__c', 'BG')
+        country = (company_info.get('c2g__ECCountryCode__c'))
         
         # Get contact information
         telephone = company_info.get('c2g__Phone__c', '')
@@ -102,7 +102,7 @@ class CertiniaTransformer:
         return {
             'audit_file_version': '1.0',
             'audit_file_country': 'BG',
-            'audit_file_date_created': datetime.now().isoformat(),
+            'audit_file_date_created': datetime.now().date().isoformat(),
             'software_company_name': saft_config['software_company_name'],
             'software_product_name': saft_config['software_product_name'],
             'software_product_version': saft_config['software_product_version'],
@@ -810,6 +810,9 @@ class CertiniaTransformer:
             
             # Group lines into transaction
             transaction = {
+                'journal_id': journal.get('Name') or journal_id or 'GL',
+                'journal_description': journal.get('c2g__JournalDescription__c', ''),
+                'type':journal.get('c2g__Type__c', ''),
                 'transaction_id': str(transaction_id),
                 'period': period,
                 'period_year': period_year,
@@ -830,7 +833,21 @@ class CertiniaTransformer:
             for line in journal_lines:
                 debit_amount = self._parse_decimal(line.get('c2g__Debits__c', 0))
                 credit_amount = self._parse_decimal(line.get('c2g__Credits__c', 0))
-                account_id = line.get('c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c', '')
+                gl_account = line.get('c2g__GeneralLedgerAccount__r') or {}
+                account_id = (
+                    gl_account.get('c2g__StandardAccountID__c') or
+                    line.get('c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c') or
+                    gl_account.get('c2g__ReportingCode__c') or
+                    line.get('c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c', '')
+                )
+
+                if not (gl_account.get('c2g__StandardAccountID__c') or line.get('c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c')):
+                    logger.warning(
+                        "Journal line %s in journal %s is missing c2g__StandardAccountID__c; using fallback account value '%s'",
+                        line.get('Id', '<unknown>'),
+                        journal_id or '<unknown>',
+                        account_id,
+                    )
                 
                 transaction['lines'].append({
                     'record_id': str(line_number),
@@ -855,7 +872,7 @@ class CertiniaTransformer:
                     'tax_declaration_period': ''
                 })
                 line_number += 1
-            
+
             transformed.append(transaction)
             transaction_id += 1
         
@@ -919,7 +936,7 @@ class CertiniaTransformer:
                 
                 transformed_lines.append({
                     'line_number': str(line_number),
-                    'account_id': gl_account.get('c2g__ReportingCode__c', ''),
+                    'account_id': gl_account.get('c2g__StandardAccountID__c') or gl_account.get('c2g__ReportingCode__c', ''),
                     'product_code': product_info.get('ProductCode', ''),
                     'product_description': product_info.get('Name', ''),
                     'quantity': quantity,
@@ -988,6 +1005,19 @@ class CertiniaTransformer:
                 cash_value = self._parse_decimal(line.get('c2g__CashEntryValue__c', 0))
                 net_value = self._parse_decimal(line.get('c2g__NetValue__c', 0))
                 line_account_info = line.get('c2g__Account__r') or {}
+                ar_control = line_account_info.get('c2g__CODAAccountsReceivableControl__r') or {}
+                ap_control = line_account_info.get('c2g__CODAAccountsPayableControl__r') or {}
+                payment_account_id = (
+                    ar_control.get('c2g__StandardAccountID__c') or
+                    line.get('c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c') or
+                    ap_control.get('c2g__StandardAccountID__c') or
+                    line.get('c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c') or
+                    ar_control.get('c2g__ReportingCode__c') or
+                    line.get('c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__ReportingCode__c') or
+                    ap_control.get('c2g__ReportingCode__c') or
+                    line.get('c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c') or
+                    ''
+                )
                 
                 # Determine debit/credit based on payment type and value sign
                 payment_type = payment.get('c2g__Type__c', '')
@@ -1000,7 +1030,7 @@ class CertiniaTransformer:
                 
                 transformed_lines.append({
                     'line_number': str(line_number),
-                    'account_id': line_account_info.get('Name', ''),
+                    'account_id': payment_account_id,
                     'customer_id': line_account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
                     'description': line.get('c2g__LineDescription__c', ''),
                     'debit_amount': debit_amount,
@@ -1056,6 +1086,13 @@ class CertiniaTransformer:
             
             invoice_date = invoice.get('c2g__InvoiceDate__c', '')
             account_info = invoice.get('c2g__Account__r') or {}
+            purchase_account_id = (
+                account_info.get('c2g__CODAAccountsPayableControl__r', {}).get('c2g__StandardAccountID__c') or
+                invoice.get('c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c') or
+                account_info.get('c2g__CODAAccountsPayableControl__r', {}).get('c2g__ReportingCode__c') or
+                invoice.get('c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c') or
+                ''
+            )
             
             # Transform invoice lines
             transformed_lines = []
@@ -1074,7 +1111,7 @@ class CertiniaTransformer:
                 
                 transformed_lines.append({
                     'line_number': str(line_number),
-                    'account_id': gl_account.get('c2g__ReportingCode__c', ''),
+                    'account_id': gl_account.get('c2g__StandardAccountID__c') or gl_account.get('c2g__ReportingCode__c', ''),
                     'product_code': product_info.get('ProductCode', ''),
                     'product_description': product_info.get('Name', ''),
                     'quantity': quantity,
@@ -1090,11 +1127,12 @@ class CertiniaTransformer:
             
             transformed.append({
                 'invoice_no': invoice.get('Name', ''),
+                'account_id': purchase_account_id,
                 'invoice_date': invoice_date,
                 'period': period,
                 'period_year': period_year,
                 'supplier_id': account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
-                'supplier_name': account_info.get('Name', ''),
+                'supplier_name': account_info.get('Name', '') or invoice.get('c2g__Account__r.Name', ''),
                 'gl_posting_date': invoice_date,
                 'system_id': invoice_id,
                 'lines': transformed_lines,
@@ -1120,7 +1158,9 @@ class CertiniaTransformer:
                 'tax_type': '100',
                 'tax_code': tax_code.get('c2g__StandardCodeID__c', 'STD'),
                 'description': tax_code.get('c2g__Description__c', ''),
-                'tax_percentage': tax_rate
+                'tax_percentage': tax_rate,
+                'base_rate': tax_rate / 100 if tax_rate > 1 else tax_rate,
+                'country': 'BG'
             })
         
         return transformed

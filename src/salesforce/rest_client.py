@@ -257,8 +257,9 @@ class SalesforceRestClient:
         company_id = None
         if company_filter:
             company_query = f"""
-                SELECT Id, Name, FF_Name_cyrillic__c, c2g__Street__c, c2g__City__c, 
-                       F_City_Cyrillic__c, c2g__ZipPostCode__c, c2g__Country__c, 
+                  SELECT Id, Name, FF_Name_cyrillic__c, c2g__Street__c, c2g__City__c, 
+                      F_City_Cyrillic__c, c2g__ZipPostCode__c, c2g__Country__c,
+                      c2g__ECCountryCode__c,
                        c2g__Phone__c, c2g__ContactEmail__c, c2g__Website__c,
                        c2g__VATRegistrationNumber__c, c2g__TaxIdentificationNumber__c,
                        SFocus_Company_Identification_Number__c, c2g__StateProvince__c,
@@ -285,7 +286,7 @@ class SalesforceRestClient:
             # Build IN clause for period names
             period_in_clause = "('" + "', '".join(period_names) + "')"
             journal_query = f"""
-                SELECT Id, Name, c2g__JournalDate__c, c2g__Type__c, 
+                SELECT Id, Name, c2g__JournalDescription__c, c2g__JournalDate__c, c2g__Type__c, 
                        c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name,
                        c2g__Period__r.c2g__PeriodNumber__c
                 FROM {objects_config['journal_entry']}
@@ -298,7 +299,8 @@ class SalesforceRestClient:
             
             line_query = f"""
                 SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
-                       c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
+                      c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
+                      c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
                        c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
                 FROM {objects_config['journal_line']}
                 WHERE c2g__Journal__r.c2g__Period__r.Name IN {period_in_clause}
@@ -328,6 +330,7 @@ class SalesforceRestClient:
             invoice_line_company_filter = f"AND fferpcore__BillingDocument__r.fferpcore__Company__r.c2g__msg_link_ffa_id__c = '{company_id}'" if company_id else ""
             sales_invoice_line_query = f"""
                 SELECT Id, Name, fferpcore__BillingDocument__c, c2g__GeneralLedgerAccount__c,
+                       c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
                        c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
                        fferpcore__ProductService__c, fferpcore__ProductService__r.ProductCode, fferpcore__ProductService__r.Name,
                        fferpcore__Quantity__c, fferpcore__UnitPrice__c, fferpcore__NetValue__c,
@@ -350,6 +353,10 @@ class SalesforceRestClient:
                 SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Period__r.Name,
                        c2g__Account__c, c2g__Account__r.Name,
                        c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                      c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
+                      c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__ReportingCode__c,
+                      c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c,
+                      c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c,
                        CurrencyIsoCode
                 FROM {objects_config['cash_entry']}
                 WHERE c2g__Date__c >= {start_str}
@@ -364,7 +371,11 @@ class SalesforceRestClient:
                        c2g__BankAccountValue__c, c2g__CashEntryValue__c, c2g__NetValue__c,
                        c2g__LineDescription__c, c2g__LineNumber__c,
                        c2g__Account__c, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
-                       c2g__Account__r.Name
+                      c2g__Account__r.Name,
+                      c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
+                      c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__ReportingCode__c,
+                      c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c,
+                      c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c
                 FROM {objects_config['cash_entry_line']}
                 WHERE c2g__CashEntry__r.c2g__Date__c >= {start_str}
                   AND c2g__CashEntry__r.c2g__Date__c <= {end_str}
@@ -398,7 +409,6 @@ class SalesforceRestClient:
                    c2g__Transaction__r.c2g__Period__r.c2g__YearName__c
             FROM c2g__codaTransactionLineItem__c
             WHERE {company_filter_sql}c2g__Transaction__r.c2g__Period__r.Name != null
-                  AND c2g__HomeCurrency__r.Name = 'BGN'
         """
         
         # Use Bulk API v2 for large transaction line queries (600k+ records)
@@ -509,7 +519,9 @@ class SalesforceRestClient:
         # Extract Purchase Invoices
         if 'purchase_invoices' in sections:
             purchase_invoice_query = f"""
-                SELECT Id, Name, c2g__Account__c, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+              SELECT Id, Name, c2g__Account__c, c2g__Account__r.Name, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                  c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c,
+                  c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c,
                        c2g__InvoiceDate__c, c2g__DueDate__c, c2g__InvoiceStatus__c,
                        c2g__AccountInvoiceNumber__c, c2g__InvoiceDescription__c, CurrencyIsoCode
                 FROM {objects_config['payable_invoice']}
@@ -523,6 +535,7 @@ class SalesforceRestClient:
             purchase_line_company_filter = f"AND c2g__PurchaseInvoice__r.c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
             purchase_invoice_line_query = f"""
                 SELECT Id, Name, c2g__PurchaseInvoice__c, c2g__GeneralLedgerAccount__c,
+                       c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
                        c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
                        F_Product__c, F_Product__r.ProductCode, F_Product__r.Name,
                        F_Quantity__c, c2g__NetValue__c,
@@ -541,8 +554,9 @@ class SalesforceRestClient:
         # Extract Company Information (if not already extracted by filter)
         if 'company' not in data:
             company_query = f"""
-                SELECT Id, Name, FF_Name_cyrillic__c, c2g__Street__c, c2g__City__c, 
-                       F_City_Cyrillic__c, c2g__ZipPostCode__c, c2g__Country__c, 
+                  SELECT Id, Name, FF_Name_cyrillic__c, c2g__Street__c, c2g__City__c, 
+                      F_City_Cyrillic__c, c2g__ZipPostCode__c, c2g__Country__c,
+                      c2g__ECCountryCode__c,
                        c2g__Phone__c, c2g__Fax__c, c2g__ContactEmail__c, c2g__Website__c,
                        c2g__VATRegistrationNumber__c, c2g__TaxIdentificationNumber__c,
                        SFocus_Company_Identification_Number__c, c2g__StateProvince__c,
