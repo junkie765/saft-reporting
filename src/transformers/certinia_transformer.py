@@ -767,11 +767,10 @@ class CertiniaTransformer:
                 'description': journal.get('c2g__Reference__c', 'Journal Entry'),
                 'system_entry_date': journal_date,
                 'gl_posting_date': journal_date,
-                'source_id': journal_id or '0',
                 'batch_id': '0',
                 'customer_id': '0',
                 'supplier_id': '0',
-                'system_id': journal_id or '0',
+                    'system_id': journal.get('Name') or journal_id or 'GL',
                 'lines': []
             }
             

@@ -203,11 +203,10 @@ class TestBalanceLogic(unittest.TestCase):
             'description': 'Journal Entry',
             'system_entry_date': '2025-05-15',
             'gl_posting_date': '2025-05-15',
-            'source_id': 'J1',
             'batch_id': '0',
             'customer_id': '0',
             'supplier_id': '0',
-            'system_id': 'J1',
+                'system_id': 'Sales Journal',
             'lines': [
                 {
                     'record_id': '1',
@@ -257,11 +256,10 @@ class TestBalanceLogic(unittest.TestCase):
             'description': '',
             'system_entry_date': '2025-05-15',
             'gl_posting_date': '2025-05-15',
-            'source_id': 'J1',
             'batch_id': '0',
             'customer_id': '0',
             'supplier_id': '0',
-            'system_id': 'J1',
+                'system_id': 'Sales Journal',
             'lines': [
                 {
                     'record_id': '1',
@@ -295,6 +293,62 @@ class TestBalanceLogic(unittest.TestCase):
         child_names = [child.tag.rsplit('}', 1)[-1] for child in line_elem]
         self.assertIn('Description', child_names)
         self.assertLess(child_names.index('Description'), child_names.index('DebitAmount'))
+
+    def test_gl_transaction_uses_journal_name_for_system_id_and_omits_source_id(self):
+        """GL transactions should write SystemID from journal name and omit SourceID."""
+        generator = SAFTGenerator({})
+        root = ET.Element(f"{{{generator.NAMESPACE}}}Root")
+
+        generator._add_journal_entry(root, {
+            'journal_id': 'Sales Journal',
+            'journal_description': 'General ledger',
+            'type': 'GLEntry',
+            'transaction_id': '1',
+            'period': 5,
+            'period_year': 2025,
+            'transaction_date': '2025-05-15',
+            'transaction_type': 'Normal',
+            'description': 'Journal Entry',
+            'system_entry_date': '2025-05-15',
+            'gl_posting_date': '2025-05-15',
+            'batch_id': '0',
+            'customer_id': '0',
+            'supplier_id': '0',
+            'system_id': 'Sales Journal',
+            'lines': [
+                {
+                    'record_id': '1',
+                    'account_id': '5030',
+                    'taxpayer_account_id': '5030',
+                    'debit_amount': 10.0,
+                    'credit_amount': 0.0,
+                    'description': 'Test line',
+                    'value_date': '2025-05-15',
+                    'source_document_id': 'J1',
+                    'customer_id': '0',
+                    'supplier_id': '0',
+                    'currency_code': 'BGN',
+                    'exchange_rate': '1.0000',
+                    'tax_type': '',
+                    'tax_code': '',
+                    'tax_percentage': 0,
+                    'tax_base': 0,
+                    'tax_base_description': '',
+                    'tax_amount': 0,
+                    'tax_exemption_reason': '',
+                    'tax_declaration_period': '',
+                }
+            ],
+        })
+
+        namespace = {'ns': generator.NAMESPACE}
+        transaction = root.find('ns:Journal/ns:Transaction', namespace)
+
+        self.assertIsNotNone(transaction)
+        self.assertIsNone(transaction.find('ns:SourceID', namespace))
+        system_id = transaction.find('ns:SystemID', namespace)
+        self.assertIsNotNone(system_id)
+        self.assertEqual(system_id.text, 'Sales Journal')
 
     def test_purchase_invoice_line_writes_description_before_amount(self):
         """Purchase invoice lines must include Description before InvoiceLineAmount."""

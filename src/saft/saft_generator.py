@@ -478,7 +478,6 @@ class SAFTGenerator:
         self._elem(trans_elem, "Period", str(entry.get('period', '')))
         self._elem(trans_elem, "PeriodYear", str(entry.get('period_year', '')))
         self._elem(trans_elem, "TransactionDate", entry['transaction_date'])
-        self._elem(trans_elem, "SourceID", entry.get('source_id', '0'))
         self._elem(trans_elem, "TransactionType", entry.get('transaction_type', 'Normal'))
         self._elem(trans_elem, "Description", entry.get('description', ''))
         self._elem(trans_elem, "BatchID", entry.get('batch_id', '0'))
