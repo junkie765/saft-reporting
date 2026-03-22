@@ -793,6 +793,164 @@ class TestBalanceLogic(unittest.TestCase):
         )
         self.assertEqual(company_struct.find('ns:RelatedParty', namespace).text, 'N')
 
+    def test_transform_customers_uses_only_411_balances(self):
+        """Customer balances must include only 411* GL lines for standard accounts."""
+        accounts = [{
+            'Id': 'CUST1',
+            'Name': 'Customer 1',
+            'AccountNumber': '1001',
+            'RecordType': {'Name': 'Standard'},
+            'c2g__CODATaxpayerIdentificationNumber__c': 'BG123',
+            'c2g__CODAVATRegistrationNumber__c': 'BG123',
+            'c2g__CODAAccountsReceivableControl__r': {'c2g__StandardAccountID__c': '411'},
+        }]
+        transaction_lines = [
+            {
+                'c2g__Account__c': 'CUST1',
+                'c2g__GeneralLedgerAccount__c': 'GL411',
+                'c2g__HomeValue__c': 100.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/004', 'c2g__PeriodNumber__c': 4, 'c2g__YearName__c': '2025'}},
+            },
+            {
+                'c2g__Account__c': 'CUST1',
+                'c2g__GeneralLedgerAccount__c': 'GL411',
+                'c2g__HomeValue__c': -40.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/005', 'c2g__PeriodNumber__c': 5, 'c2g__YearName__c': '2025'}},
+            },
+            {
+                'c2g__Account__c': 'CUST1',
+                'c2g__GeneralLedgerAccount__c': 'GL999',
+                'c2g__HomeValue__c': 999.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/005', 'c2g__PeriodNumber__c': 5, 'c2g__YearName__c': '2025'}},
+            },
+        ]
+        gl_account_codes = {'GL411': '4110001', 'GL999': '999999'}
+
+        transformed = self.transformer._transform_customers(accounts, transaction_lines, gl_account_codes)
+
+        self.assertEqual(len(transformed), 1)
+        self.assertEqual(transformed[0]['opening_debit_balance'], 100.0)
+        self.assertEqual(transformed[0]['opening_credit_balance'], 0.0)
+        self.assertEqual(transformed[0]['closing_debit_balance'], 60.0)
+        self.assertEqual(transformed[0]['closing_credit_balance'], 0.0)
+
+    def test_transform_suppliers_uses_only_401_balances(self):
+        """Supplier balances must include only 401* GL lines for supplier accounts."""
+        accounts = [{
+            'Id': 'SUP1',
+            'Name': 'Supplier 1',
+            'AccountNumber': '2001',
+            'RecordType': {'Name': 'Supplier Data Management'},
+            'c2g__CODATaxpayerIdentificationNumber__c': 'BG456',
+            'fferpcore__VatRegistrationNumber__c': 'BG456',
+            'c2g__CODAAccountsPayableControl__r': {'c2g__StandardAccountID__c': '401'},
+        }]
+        transaction_lines = [
+            {
+                'c2g__Account__c': 'SUP1',
+                'c2g__GeneralLedgerAccount__c': 'GL401',
+                'c2g__HomeValue__c': -50.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/004', 'c2g__PeriodNumber__c': 4, 'c2g__YearName__c': '2025'}},
+            },
+            {
+                'c2g__Account__c': 'SUP1',
+                'c2g__GeneralLedgerAccount__c': 'GL401',
+                'c2g__HomeValue__c': 20.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/005', 'c2g__PeriodNumber__c': 5, 'c2g__YearName__c': '2025'}},
+            },
+            {
+                'c2g__Account__c': 'SUP1',
+                'c2g__GeneralLedgerAccount__c': 'GL999',
+                'c2g__HomeValue__c': -999.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/005', 'c2g__PeriodNumber__c': 5, 'c2g__YearName__c': '2025'}},
+            },
+        ]
+        gl_account_codes = {'GL401': '4010001', 'GL999': '999999'}
+
+        transformed = self.transformer._transform_suppliers(accounts, transaction_lines, gl_account_codes)
+
+        self.assertEqual(len(transformed), 1)
+        self.assertEqual(transformed[0]['opening_debit_balance'], 0.0)
+        self.assertEqual(transformed[0]['opening_credit_balance'], 50.0)
+        self.assertEqual(transformed[0]['closing_debit_balance'], 0.0)
+        self.assertEqual(transformed[0]['closing_credit_balance'], 30.0)
+
+    def test_precomputed_customer_balances_match_scan_path(self):
+        """Precomputed customer balances must match the legacy scan path."""
+        accounts = [{
+            'Id': 'CUST1',
+            'Name': 'Customer 1',
+            'AccountNumber': '1001',
+            'RecordType': {'Name': 'Standard'},
+            'c2g__CODATaxpayerIdentificationNumber__c': 'BG123',
+            'c2g__CODAVATRegistrationNumber__c': 'BG123',
+            'c2g__CODAAccountsReceivableControl__r': {'c2g__StandardAccountID__c': '411'},
+        }]
+        transaction_lines = [
+            {
+                'c2g__Account__c': 'CUST1',
+                'c2g__GeneralLedgerAccount__c': 'GL411',
+                'c2g__HomeValue__c': 30.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/004', 'c2g__PeriodNumber__c': 4, 'c2g__YearName__c': '2025'}},
+            },
+            {
+                'c2g__Account__c': 'CUST1',
+                'c2g__GeneralLedgerAccount__c': 'GL411',
+                'c2g__HomeValue__c': 20.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/005', 'c2g__PeriodNumber__c': 5, 'c2g__YearName__c': '2025'}},
+            },
+        ]
+        gl_account_codes = {'GL411': '4110001'}
+        _, _, customer_balances, _ = self.transformer._calculate_balance_buckets(
+            transaction_lines,
+            gl_account_codes,
+            include_account_balances=False,
+            customer_ids=frozenset({'CUST1'}),
+        )
+
+        scanned = self.transformer._transform_customers(accounts, transaction_lines, gl_account_codes)
+        precomputed = self.transformer._transform_customers(accounts, transaction_lines, gl_account_codes, precomputed_balances=customer_balances)
+
+        self.assertEqual(scanned, precomputed)
+
+    def test_precomputed_supplier_balances_match_scan_path(self):
+        """Precomputed supplier balances must match the legacy scan path."""
+        accounts = [{
+            'Id': 'SUP1',
+            'Name': 'Supplier 1',
+            'AccountNumber': '2001',
+            'RecordType': {'Name': 'Supplier Data Management'},
+            'c2g__CODATaxpayerIdentificationNumber__c': 'BG456',
+            'fferpcore__VatRegistrationNumber__c': 'BG456',
+            'c2g__CODAAccountsPayableControl__r': {'c2g__StandardAccountID__c': '401'},
+        }]
+        transaction_lines = [
+            {
+                'c2g__Account__c': 'SUP1',
+                'c2g__GeneralLedgerAccount__c': 'GL401',
+                'c2g__HomeValue__c': -10.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/004', 'c2g__PeriodNumber__c': 4, 'c2g__YearName__c': '2025'}},
+            },
+            {
+                'c2g__Account__c': 'SUP1',
+                'c2g__GeneralLedgerAccount__c': 'GL401',
+                'c2g__HomeValue__c': -15.0,
+                'c2g__Transaction__r': {'c2g__Period__r': {'Name': '2025/005', 'c2g__PeriodNumber__c': 5, 'c2g__YearName__c': '2025'}},
+            },
+        ]
+        gl_account_codes = {'GL401': '4010001'}
+        _, _, _, supplier_balances = self.transformer._calculate_balance_buckets(
+            transaction_lines,
+            gl_account_codes,
+            include_account_balances=False,
+            supplier_ids=frozenset({'SUP1'}),
+        )
+
+        scanned = self.transformer._transform_suppliers(accounts, transaction_lines, gl_account_codes)
+        precomputed = self.transformer._transform_suppliers(accounts, transaction_lines, gl_account_codes, precomputed_balances=supplier_balances)
+
+        self.assertEqual(scanned, precomputed)
+
     def test_tax_table_entry_writes_description_before_tax_code_details(self):
         """TaxTableEntry must emit Description before nested TaxCodeDetails."""
         generator = SAFTGenerator({})

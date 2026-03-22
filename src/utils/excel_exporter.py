@@ -54,20 +54,10 @@ class ExcelExporter:
             logger.warning(f"No data for sheet: {sheet_name}")
             return pd.DataFrame()
         
-        # Process in chunks if dataset is large (> 10,000 records)
-        chunk_size = 10000
-        if len(records) > chunk_size:
-            logger.info(f"Processing {len(records)} records in chunks for {sheet_name}...")
-            dfs = []
-            for i in range(0, len(records), chunk_size):
-                chunk = records[i:i + chunk_size]
-                flattened = [self._flatten_record(record) for record in chunk]
-                dfs.append(pd.DataFrame(flattened))
-            df = pd.concat(dfs, ignore_index=True)
-        else:
-            # Flatten all records
-            flattened = [self._flatten_record(record) for record in records]
-            df = pd.DataFrame(flattened)
+        if len(records) > 10000:
+            logger.info(f"Processing {len(records)} records for {sheet_name}...")
+
+        df = pd.DataFrame.from_records(self._flatten_record(record) for record in records)
         
         logger.info(f"Prepared {len(df)} rows for sheet: {sheet_name}")
         return df
@@ -97,17 +87,15 @@ class ExcelExporter:
             
             # Create a copy of parent without the children
             parent_data = {k: v for k, v in parent.items() if k != child_key}
+            flat_parent = self._flatten_record(parent_data)
             
             if not children:
                 # If no children, still output parent as one row
-                flat_parent = self._flatten_record(parent_data)
-                flat_parent['_row_type'] = 'PARENT'
-                rows.append(flat_parent)
+                rows.append({**flat_parent, '_row_type': 'PARENT'})
             else:
                 # For each child, create a row with parent data
                 for idx, child in enumerate(children):
                     flat_child = self._flatten_record(child)
-                    flat_parent = self._flatten_record(parent_data)
                     
                     # Combine parent and child data
                     combined = {}

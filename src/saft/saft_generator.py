@@ -377,9 +377,6 @@ class SAFTGenerator:
         original_count = len(customers)
         customers = [cust for cust in customers if not self._has_zero_balance(cust)]
         
-        # Sort customers by company name
-        customers = sorted(customers, key=lambda c: c.get('company_name', ''))
-        
         if original_count > len(customers):
             logger.info(f"Adding {len(customers)} customers (filtered {original_count - len(customers)} zero-balance customers)...")
         else:
@@ -413,9 +410,6 @@ class SAFTGenerator:
         # Filter out suppliers with zero balances
         original_count = len(suppliers)
         suppliers = [supp for supp in suppliers if not self._has_zero_balance(supp)]
-        
-        # Sort suppliers by company name
-        suppliers = sorted(suppliers, key=lambda s: s.get('company_name', ''))
         
         if original_count > len(suppliers):
             logger.info(f"Adding {len(suppliers)} suppliers (filtered {original_count - len(suppliers)} zero-balance suppliers)...")

@@ -260,11 +260,22 @@ class CertiniaTransformer:
         # Calculate all balances in a single pass through transaction lines
         # This is ~3x faster than calculating separately for each account type
         transaction_lines = data.get('transaction_lines', [])
+        accounts = data.get('accounts', [])
+        customer_ids = frozenset(
+            acc.get('Id') for acc in accounts
+            if acc.get('Id') and self._get_record_type(acc) == 'Standard'
+        )
+        supplier_ids = frozenset(
+            acc.get('Id') for acc in accounts
+            if acc.get('Id') and self._get_record_type(acc) == 'Supplier Data Management'
+        )
         logger.info(f"Calculating balances for all account types in single pass ({len(transaction_lines)} transaction lines)...")
-        gl_balances, _ = self._calculate_all_balances(
+        gl_balances, _, customer_balances, supplier_balances = self._calculate_balance_buckets(
             transaction_lines,
             gl_account_codes,
             include_account_balances=False,
+            customer_ids=customer_ids,
+            supplier_ids=supplier_ids,
         )
         
         return {
@@ -274,14 +285,16 @@ class CertiniaTransformer:
                 period_info['period_start_name']
             ),
             'customers': self._transform_customers(
-                data.get('accounts', []),
+                accounts,
                 transaction_lines,
-                gl_account_codes
+                gl_account_codes,
+                precomputed_balances=customer_balances,
             ),
             'suppliers': self._transform_suppliers(
-                data.get('accounts', []),
+                accounts,
                 transaction_lines,
-                gl_account_codes
+                gl_account_codes,
+                precomputed_balances=supplier_balances,
             ),
             'products': self._transform_products(data.get('products', []))
         }
@@ -323,90 +336,146 @@ class CertiniaTransformer:
         Returns:
             Tuple of (gl_account_balances, account_balances) dictionaries
         """
+        gl_balances, account_balances, _, _ = self._calculate_balance_buckets(
+            transaction_lines,
+            gl_account_codes,
+            include_account_balances=include_account_balances,
+        )
+        return gl_balances, account_balances
+
+    def _calculate_balance_buckets(self, transaction_lines: List[Dict], gl_account_codes: Dict[str, str] | None = None,
+                                   include_account_balances: bool = True,
+                                   customer_ids: frozenset[str] | None = None,
+                                   supplier_ids: frozenset[str] | None = None) -> tuple[Dict[str, Dict], Dict[str, Dict], Dict[str, Dict], Dict[str, Dict]]:
+        """Calculate GL, account, customer, and supplier balances in one pass."""
         if not transaction_lines:
             logger.warning("No transaction lines provided for balance calculation")
-            return {}, {}
-        
+            return {}, {}, {}, {}
+
         if gl_account_codes is None:
             gl_account_codes = {}
-        
+
+        customer_ids = customer_ids or frozenset()
+        supplier_ids = supplier_ids or frozenset()
+
         period_info = self._get_period_info()
         start_period_number = f"{period_info['start_period_year']}{period_info['start_period']:03d}"
         end_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
         logger.info(f"Calculating consolidated balances: Opening before period {start_period_number}, Closing through period {end_period_number}")
         logger.info(f"Processing {len(transaction_lines)} transaction lines for GL accounts and c2g__Account__c")
-        
-        # Initialize accumulators using defaultdict for cleaner code
+
         gl_opening_debits = defaultdict(float)
         gl_opening_credits = defaultdict(float)
         gl_closing_debits = defaultdict(float)
         gl_closing_credits = defaultdict(float)
-        
+
         acc_opening_debits = defaultdict(float)
         acc_opening_credits = defaultdict(float)
         acc_closing_debits = defaultdict(float)
         acc_closing_credits = defaultdict(float)
-        
-        # Track statistics
+
+        cust_opening_debits = defaultdict(float)
+        cust_opening_credits = defaultdict(float)
+        cust_closing_debits = defaultdict(float)
+        cust_closing_credits = defaultdict(float)
+
+        supp_opening_debits = defaultdict(float)
+        supp_opening_credits = defaultdict(float)
+        supp_closing_debits = defaultdict(float)
+        supp_closing_credits = defaultdict(float)
+
         skipped_no_gl_account = 0
         skipped_no_account = 0
         skipped_no_period = 0
-        
-        # Single pass through all transaction lines
+        filtered_customer_count = 0
+        filtered_supplier_count = 0
+
         for line in transaction_lines:
             gl_account_id = line.get('c2g__GeneralLedgerAccount__c')
             account_id = line.get('c2g__Account__c')
-            
+
             if not gl_account_id:
                 skipped_no_gl_account += 1
             if include_account_balances and not account_id:
                 skipped_no_account += 1
-            
+
             net_value = self._get_net_value(line)
             period_number = self._get_period_number(line)
-            
+
             if not period_number:
                 skipped_no_period += 1
                 continue
-            
+
             is_opening = period_number < start_period_number
             is_closing = period_number <= end_period_number
-            
-            # Process GL account balances
+
             if gl_account_id:
                 if is_opening:
                     if net_value > 0:
                         gl_opening_debits[gl_account_id] += net_value
                     elif net_value < 0:
                         gl_opening_credits[gl_account_id] += abs(net_value)
-                
+
                 if is_closing:
                     if net_value > 0:
                         gl_closing_debits[gl_account_id] += net_value
                     elif net_value < 0:
                         gl_closing_credits[gl_account_id] += abs(net_value)
-            
-            # Process c2g__Account__c balances
+
             if include_account_balances and account_id:
                 if is_opening:
                     if net_value > 0:
                         acc_opening_debits[account_id] += net_value
                     elif net_value < 0:
                         acc_opening_credits[account_id] += abs(net_value)
-                
+
                 if is_closing:
                     if net_value > 0:
                         acc_closing_debits[account_id] += net_value
                     elif net_value < 0:
                         acc_closing_credits[account_id] += abs(net_value)
-        
-        # Log statistics
+
+            if not account_id or not gl_account_id or net_value == 0:
+                continue
+
+            gl_code = str(gl_account_codes.get(gl_account_id, ''))
+
+            if customer_ids and account_id in customer_ids:
+                if gl_code.startswith('411'):
+                    if is_opening:
+                        if net_value > 0:
+                            cust_opening_debits[account_id] += net_value
+                        else:
+                            cust_opening_credits[account_id] += abs(net_value)
+                    if is_closing:
+                        if net_value > 0:
+                            cust_closing_debits[account_id] += net_value
+                        else:
+                            cust_closing_credits[account_id] += abs(net_value)
+                else:
+                    filtered_customer_count += 1
+
+            if supplier_ids and account_id in supplier_ids:
+                if gl_code.startswith('401'):
+                    if is_opening:
+                        if net_value > 0:
+                            supp_opening_debits[account_id] += net_value
+                        else:
+                            supp_opening_credits[account_id] += abs(net_value)
+                    if is_closing:
+                        if net_value > 0:
+                            supp_closing_debits[account_id] += net_value
+                        else:
+                            supp_closing_credits[account_id] += abs(net_value)
+                else:
+                    filtered_supplier_count += 1
+
         gl_accounts = gl_opening_debits.keys() | gl_opening_credits.keys() | gl_closing_debits.keys() | gl_closing_credits.keys()
         accounts = (
             acc_opening_debits.keys() | acc_opening_credits.keys() | acc_closing_debits.keys() | acc_closing_credits.keys()
             if include_account_balances else set()
         )
-        
+
         logger.info(f"Balance calculation complete: {len(gl_accounts)} GL accounts, {len(accounts)} c2g__Account__c records")
         logger.info(f"  Total transaction lines analyzed: {len(transaction_lines)}")
         if skipped_no_gl_account > 0:
@@ -415,8 +484,11 @@ class CertiniaTransformer:
             logger.warning(f"  Skipped {skipped_no_account} transactions with no c2g__Account__c ID")
         if skipped_no_period > 0:
             logger.warning(f"  Skipped {skipped_no_period} transactions with no period number")
-        
-        # Convert to final balance structures
+        if customer_ids:
+            logger.info(f"  Customer balance filter skipped {filtered_customer_count} non-411 lines")
+        if supplier_ids:
+            logger.info(f"  Supplier balance filter skipped {filtered_supplier_count} non-401 lines")
+
         gl_balances = self._convert_debit_credit_to_net_position(
             gl_opening_debits, gl_opening_credits, gl_closing_debits, gl_closing_credits, gl_account_codes
         )
@@ -426,8 +498,14 @@ class CertiniaTransformer:
             )
             if include_account_balances else {}
         )
-        
-        return gl_balances, account_balances
+        customer_balances = self._convert_debit_credit_to_net_position(
+            cust_opening_debits, cust_opening_credits, cust_closing_debits, cust_closing_credits
+        )
+        supplier_balances = self._convert_debit_credit_to_net_position(
+            supp_opening_debits, supp_opening_credits, supp_closing_debits, supp_closing_credits
+        )
+
+        return gl_balances, account_balances, customer_balances, supplier_balances
     
     def _convert_debit_credit_to_net_position(self, opening_debits: Dict[str, float], 
                                               opening_credits: Dict[str, float],
@@ -490,7 +568,8 @@ class CertiniaTransformer:
         
         return account_balances
     
-    def _transform_customers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str]) -> List[Dict]:
+    def _transform_customers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str],
+                             precomputed_balances: Dict[str, Dict] | None = None) -> List[Dict]:
         """Transform customer accounts with calculated balances
         
         Applies special logic for customers:
@@ -503,11 +582,6 @@ class CertiniaTransformer:
         """
         logger.info("Calculating customer balances with GL account 411* filter...")
         
-        # Get period info once
-        period_info = self._get_period_info()
-        start_period_number = f"{period_info['start_period_year']}{period_info['start_period']:03d}"
-        end_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
-        
         # Pre-filter and build customer account mapping
         customer_accounts = {
             acc_id: acc for acc in accounts
@@ -516,90 +590,22 @@ class CertiniaTransformer:
         
         logger.info(f"Found {len(customer_accounts)} customer accounts")
         
-        # Use frozenset for O(1) lookups
-        customer_ids = frozenset(customer_accounts.keys())
-        
-        # Reverse mapping: GL account ID -> GL account code (pre-computed)
-        gl_id_to_code = {gl_id: code for gl_id, code in gl_account_codes.items()}
-        
-        # Calculate balances using simple dict
-        customer_balances = {}
-        filtered_count = 0
-        processed_count = 0
-        
-        # Process transaction lines with optimized checks
-        for line in transaction_lines:
-            # Fast path: check customer membership first
-            account_id = line.get('c2g__Account__c')
-            if not account_id or account_id not in customer_ids:
-                continue
-            
-            # Early exit: check GL code before extracting period/value
-            gl_account_id = line.get('c2g__GeneralLedgerAccount__c')
-            if not gl_account_id:
-                continue
-            
-            gl_code = gl_id_to_code.get(gl_account_id, '')
-            if not str(gl_code).startswith('411'):
-                filtered_count += 1
-                continue
-            
-            # Now extract period and value (only for relevant lines)
-            period_number = self._get_period_number(line)
-            if not period_number:
-                continue
-            
-            net_value = self._get_net_value(line)
-            if net_value == 0:
-                continue  # Skip zero-value lines
-            
-            processed_count += 1
-            
-            # Initialize balance dict on first use
-            if account_id not in customer_balances:
-                customer_balances[account_id] = {
-                    'opening_debit': 0.0, 'opening_credit': 0.0,
-                    'closing_debit': 0.0, 'closing_credit': 0.0
-                }
-            
-            balances = customer_balances[account_id]
-            
-            # Accumulate balances based on period and sign
-            is_opening = period_number < start_period_number
-            is_closing = period_number <= end_period_number
-            
-            if net_value > 0:
-                if is_opening:
-                    balances['opening_debit'] += net_value
-                if is_closing:
-                    balances['closing_debit'] += net_value
-            else:  # net_value < 0
-                abs_value = abs(net_value)
-                if is_opening:
-                    balances['opening_credit'] += abs_value
-                if is_closing:
-                    balances['closing_credit'] += abs_value
-        
-        logger.info(f"Processed {processed_count} transaction lines for customers (filtered {filtered_count} non-411 GL accounts)")
+        customer_balances = precomputed_balances
+        if customer_balances is None:
+            customer_ids = frozenset(customer_accounts.keys())
+            _, _, customer_balances, _ = self._calculate_balance_buckets(
+                transaction_lines,
+                gl_account_codes,
+                include_account_balances=False,
+                customer_ids=customer_ids,
+            )
+        else:
+            logger.info("Using precomputed customer balances from consolidated pass...")
         
         # Transform to final structure with optimized balance calculation
         transformed = []
         for account_id, acc in customer_accounts.items():
-            balances = customer_balances.get(account_id)
-            
-            # If no balances, use zeros
-            if not balances:
-                opening_debit_bal = opening_credit_bal = 0.0
-                closing_debit_bal = closing_credit_bal = 0.0
-            else:
-                # Calculate net and convert to presentation format
-                opening_net = balances['opening_debit'] - balances['opening_credit']
-                closing_net = balances['closing_debit'] - balances['closing_credit']
-                
-                opening_debit_bal = max(0.0, opening_net)
-                opening_credit_bal = max(0.0, -opening_net)
-                closing_debit_bal = max(0.0, closing_net)
-                closing_credit_bal = max(0.0, -closing_net)
+            balances = customer_balances.get(account_id, {})
             
             # Cache frequently accessed fields
             acc_number = acc.get('AccountNumber', acc.get('Id', ''))
@@ -625,10 +631,10 @@ class CertiniaTransformer:
                     'postal_code': acc.get('BillingPostalCode', ''),
                     'country': acc.get('BillingCountry', 'BG')
                 },
-                'opening_debit_balance': opening_debit_bal,
-                'opening_credit_balance': opening_credit_bal,
-                'closing_debit_balance': closing_debit_bal,
-                'closing_credit_balance': closing_credit_bal
+                'opening_debit_balance': balances.get('opening_debit_balance', 0.0),
+                'opening_credit_balance': balances.get('opening_credit_balance', 0.0),
+                'closing_debit_balance': balances.get('closing_debit_balance', 0.0),
+                'closing_credit_balance': balances.get('closing_credit_balance', 0.0)
             })
         
         # Sort customers alphabetically by company name
@@ -636,7 +642,8 @@ class CertiniaTransformer:
         logger.info(f"Transformed {len(transformed)} customers with GL 411* filtering")
         return transformed
     
-    def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str]) -> List[Dict]:
+    def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str],
+                             precomputed_balances: Dict[str, Dict] | None = None) -> List[Dict]:
         """Transform supplier accounts with calculated balances
         
         Applies special logic for suppliers:
@@ -649,11 +656,6 @@ class CertiniaTransformer:
         """
         logger.info("Calculating supplier balances with GL account 401* filter...")
         
-        # Get period info once
-        period_info = self._get_period_info()
-        start_period_number = f"{period_info['start_period_year']}{period_info['start_period']:03d}"
-        end_period_number = f"{period_info['period_year']}{period_info['period']:03d}"
-        
         # Pre-filter and build supplier account mapping with frozenset for faster lookups
         supplier_accounts = {
             acc_id: acc for acc in accounts
@@ -662,90 +664,22 @@ class CertiniaTransformer:
         
         logger.info(f"Found {len(supplier_accounts)} supplier accounts")
         
-        # Use frozenset for O(1) lookups instead of dict.get() in tight loop
-        supplier_ids = frozenset(supplier_accounts.keys())
-        
-        # Reverse mapping: GL account ID -> GL account code (pre-computed)
-        gl_id_to_code = {gl_id: code for gl_id, code in gl_account_codes.items()}
-        
-        # Calculate balances using simple dict (more efficient than defaultdict with lambda)
-        supplier_balances = {}
-        filtered_count = 0
-        processed_count = 0
-        
-        # Process transaction lines with optimized checks
-        for line in transaction_lines:
-            # Fast path: check supplier membership first
-            account_id = line.get('c2g__Account__c')
-            if not account_id or account_id not in supplier_ids:
-                continue
-            
-            # Early exit: check GL code before extracting period/value
-            gl_account_id = line.get('c2g__GeneralLedgerAccount__c')
-            if not gl_account_id:
-                continue
-            
-            gl_code = gl_id_to_code.get(gl_account_id, '')
-            if not str(gl_code).startswith('401'):
-                filtered_count += 1
-                continue
-            
-            # Now extract period and value (only for relevant lines)
-            period_number = self._get_period_number(line)
-            if not period_number:
-                continue
-            
-            net_value = self._get_net_value(line)
-            if net_value == 0:
-                continue  # Skip zero-value lines
-            
-            processed_count += 1
-            
-            # Initialize balance dict on first use
-            if account_id not in supplier_balances:
-                supplier_balances[account_id] = {
-                    'opening_debit': 0.0, 'opening_credit': 0.0,
-                    'closing_debit': 0.0, 'closing_credit': 0.0
-                }
-            
-            balances = supplier_balances[account_id]
-            
-            # Accumulate balances based on period and sign
-            is_opening = period_number < start_period_number
-            is_closing = period_number <= end_period_number
-            
-            if net_value > 0:
-                if is_opening:
-                    balances['opening_debit'] += net_value
-                if is_closing:
-                    balances['closing_debit'] += net_value
-            else:  # net_value < 0
-                abs_value = abs(net_value)
-                if is_opening:
-                    balances['opening_credit'] += abs_value
-                if is_closing:
-                    balances['closing_credit'] += abs_value
-        
-        logger.info(f"Processed {processed_count} transaction lines for suppliers (filtered {filtered_count} non-401 GL accounts)")
+        supplier_balances = precomputed_balances
+        if supplier_balances is None:
+            supplier_ids = frozenset(supplier_accounts.keys())
+            _, _, _, supplier_balances = self._calculate_balance_buckets(
+                transaction_lines,
+                gl_account_codes,
+                include_account_balances=False,
+                supplier_ids=supplier_ids,
+            )
+        else:
+            logger.info("Using precomputed supplier balances from consolidated pass...")
         
         # Transform to final structure with optimized balance calculation
         transformed = []
         for account_id, acc in supplier_accounts.items():
-            balances = supplier_balances.get(account_id)
-            
-            # If no balances, use zeros
-            if not balances:
-                opening_debit_bal = opening_credit_bal = 0.0
-                closing_debit_bal = closing_credit_bal = 0.0
-            else:
-                # Calculate net and convert to presentation format
-                opening_net = balances['opening_debit'] - balances['opening_credit']
-                closing_net = balances['closing_debit'] - balances['closing_credit']
-                
-                opening_debit_bal = max(0.0, opening_net)
-                opening_credit_bal = max(0.0, -opening_net)
-                closing_debit_bal = max(0.0, closing_net)
-                closing_credit_bal = max(0.0, -closing_net)
+            balances = supplier_balances.get(account_id, {})
             
             # Cache frequently accessed fields
             acc_number = acc.get('AccountNumber', acc.get('Id', ''))
@@ -777,10 +711,10 @@ class CertiniaTransformer:
                     'postal_code': acc.get('BillingPostalCode', ''),
                     'country': acc.get('BillingCountry', 'BG')
                 },
-                'opening_debit_balance': opening_debit_bal,
-                'opening_credit_balance': opening_credit_bal,
-                'closing_debit_balance': closing_debit_bal,
-                'closing_credit_balance': closing_credit_bal
+                'opening_debit_balance': balances.get('opening_debit_balance', 0.0),
+                'opening_credit_balance': balances.get('opening_credit_balance', 0.0),
+                'closing_debit_balance': balances.get('closing_debit_balance', 0.0),
+                'closing_credit_balance': balances.get('closing_credit_balance', 0.0)
             })
         
         # Sort suppliers alphabetically by company name

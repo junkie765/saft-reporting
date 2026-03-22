@@ -38,6 +38,8 @@ class SaftReportingUI:
         self.report_type_var = tk.StringVar(value="Monthly")
         self.export_excel_var = tk.BooleanVar(value=False)
         self.selections_ready = False
+        self.current_year = str(datetime.now().year)
+        self.current_month = datetime.now().month
         
         # Authenticate and get REST client
         try:
@@ -53,12 +55,9 @@ class SaftReportingUI:
         
         # Fetch data from Salesforce
         self.companies = self._fetch_companies()
-        self.years, self.periods_by_year = self._fetch_periods_from_salesforce()
+        self.years = []
+        self.periods_by_year = {}
         self.available_periods = []
-        
-        # Cache current year to avoid repeated datetime.now() calls
-        self.current_year = str(datetime.now().year)
-        self.current_month = datetime.now().month
         
         # Build company lookup dict for faster searches
         self.company_by_name = {c['name']: c['id'] for c in self.companies}

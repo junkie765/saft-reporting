@@ -5,7 +5,7 @@ import json
 import os
 import time
 from urllib.parse import urlparse, parse_qs
-from simple_salesforce import Salesforce
+from simple_salesforce.api import Salesforce
 import requests
 import http.server
 import socketserver
@@ -87,6 +87,11 @@ class SalesforceAuth:
         self.config = config
         self.session = None
         self.config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config.json')
+        self.request_timeout = (
+            config.get('connect_timeout', 10),
+            config.get('read_timeout', 120)
+        )
+        self.http_session = requests.Session()
     
     def _get_auth_url(self) -> str:
         """Get base authentication URL based on domain configuration"""
@@ -252,7 +257,11 @@ class SalesforceAuth:
             'code_verifier': auth_result['code_verifier']
         }
         
-        response = requests.post(f"{auth_url_base}/services/oauth2/token", data=token_data)
+        response = self.http_session.post(
+            f"{auth_url_base}/services/oauth2/token",
+            data=token_data,
+            timeout=self.request_timeout,
+        )
         if response.status_code != 200:
             error_msg = response.json().get('error_description', 'Unknown error')
             raise Exception(f"Token exchange failed: {error_msg}")
@@ -279,11 +288,11 @@ class SalesforceAuth:
         """Start a local HTTP server to capture OAuth callback"""
         
         class OAuthHandler(http.server.BaseHTTPRequestHandler):
-            def do_GET(handler_self):
+            def do_GET(self):
                 """Handle GET request from OAuth callback"""
                 try:
                     # Parse query parameters
-                    parsed_path = urlparse(handler_self.path)
+                    parsed_path = urlparse(self.path)
                     
                     if parsed_path.path == '/oauth/callback':
                         params = parse_qs(parsed_path.query)
@@ -291,32 +300,32 @@ class SalesforceAuth:
                         if 'code' in params:
                             auth_result['code'] = params['code'][0]
                             auth_result['received'] = True
-                            handler_self.send_response(200)
-                            handler_self.send_header('Content-type', 'text/html; charset=utf-8')
-                            handler_self.end_headers()
-                            handler_self.wfile.write(SUCCESS_HTML.encode('utf-8'))
+                            self.send_response(200)
+                            self.send_header('Content-type', 'text/html; charset=utf-8')
+                            self.end_headers()
+                            self.wfile.write(SUCCESS_HTML.encode('utf-8'))
                             
                         elif 'error' in params:
                             error_desc = params.get('error_description', [params['error'][0]])[0]
                             auth_result['error'] = error_desc
                             auth_result['received'] = True
-                            handler_self.send_response(200)
-                            handler_self.send_header('Content-type', 'text/html; charset=utf-8')
-                            handler_self.end_headers()
-                            handler_self.wfile.write(ERROR_HTML_TEMPLATE.format(error_desc=error_desc).encode('utf-8'))
+                            self.send_response(200)
+                            self.send_header('Content-type', 'text/html; charset=utf-8')
+                            self.end_headers()
+                            self.wfile.write(ERROR_HTML_TEMPLATE.format(error_desc=error_desc).encode('utf-8'))
                         
                         # Shutdown server after receiving callback
-                        threading.Thread(target=handler_self.server.shutdown, daemon=True).start()
+                        threading.Thread(target=self.server.shutdown, daemon=True).start()
                     else:
                         # 404 for other paths
-                        handler_self.send_response(404)
-                        handler_self.end_headers()
+                        self.send_response(404)
+                        self.end_headers()
                         
                 except Exception as e:
                     auth_result['error'] = f"Server error: {str(e)}"
                     auth_result['received'] = True
             
-            def log_message(handler_self, format, *args):
+            def log_message(self, format, *args):
                 """Suppress server log messages"""
                 pass
         
@@ -336,7 +345,11 @@ class SalesforceAuth:
             'refresh_token': oauth_config['refresh_token']
         }
         
-        response = requests.post(f"{self._get_auth_url()}/services/oauth2/token", data=data)
+        response = self.http_session.post(
+            f"{self._get_auth_url()}/services/oauth2/token",
+            data=data,
+            timeout=self.request_timeout,
+        )
         response.raise_for_status()
         
         token_data = response.json()
