@@ -78,6 +78,62 @@ class TestBalanceLogic(unittest.TestCase):
         self.assertEqual(gl_balances['GL001']['closing_debit_balance'], 0.0)
         self.assertGreater(gl_balances['GL001']['closing_credit_balance'], 0)
 
+    def test_gl_balances_unchanged_when_account_balance_accumulation_is_disabled(self):
+        """Skipping account balance accumulation must not change GLA balances."""
+        transaction_lines = [
+            {
+                'c2g__GeneralLedgerAccount__c': 'GL001',
+                'c2g__Account__c': 'ACC1',
+                'c2g__HomeValue__c': 100.0,
+                'c2g__Transaction__r': {
+                    'c2g__Period__r': {
+                        'Name': '2025/004',
+                        'c2g__PeriodNumber__c': 4,
+                        'c2g__YearName__c': '2025'
+                    }
+                }
+            },
+            {
+                'c2g__GeneralLedgerAccount__c': 'GL001',
+                'c2g__Account__c': 'ACC1',
+                'c2g__HomeValue__c': -25.0,
+                'c2g__Transaction__r': {
+                    'c2g__Period__r': {
+                        'Name': '2025/005',
+                        'c2g__PeriodNumber__c': 5,
+                        'c2g__YearName__c': '2025'
+                    }
+                }
+            },
+            {
+                'c2g__GeneralLedgerAccount__c': 'GL002',
+                'c2g__Account__c': 'ACC2',
+                'c2g__HomeValue__c': -50.0,
+                'c2g__Transaction__r': {
+                    'c2g__Period__r': {
+                        'Name': '2025/005',
+                        'c2g__PeriodNumber__c': 5,
+                        'c2g__YearName__c': '2025'
+                    }
+                }
+            }
+        ]
+
+        gl_account_codes = {'GL001': '100001', 'GL002': '200001'}
+        baseline_gl_balances, baseline_account_balances = self.transformer._calculate_all_balances(
+            transaction_lines,
+            gl_account_codes,
+        )
+        optimized_gl_balances, optimized_account_balances = self.transformer._calculate_all_balances(
+            transaction_lines,
+            gl_account_codes,
+            include_account_balances=False,
+        )
+
+        self.assertEqual(baseline_gl_balances, optimized_gl_balances)
+        self.assertTrue(baseline_account_balances)
+        self.assertEqual(optimized_account_balances, {})
+
     def test_contact_person_written_before_telephone(self):
         """Contact must include nested ContactPerson before Telephone."""
         generator = SAFTGenerator({})

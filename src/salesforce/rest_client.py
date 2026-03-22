@@ -4,7 +4,7 @@ import time
 import csv
 import io
 from datetime import datetime
-from typing import Dict, List, Any, Set
+from typing import Dict, List, Any, Set, Iterable, BinaryIO, cast
 import requests
 
 
@@ -27,11 +27,49 @@ class SalesforceRestClient:
         self.instance_url = f"https://{sf_session.sf_instance}"
         self.api_version = config['salesforce']['api_version']
         self.base_url = f"{self.instance_url}/services/data/v{self.api_version}"
+        self.request_timeout = (
+            config['salesforce'].get('connect_timeout', 10),
+            config['salesforce'].get('read_timeout', 120)
+        )
         
         self.headers = {
             'Authorization': f'Bearer {sf_session.session_id}',
             'Content-Type': 'application/json'
         }
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+
+    @staticmethod
+    def _build_nested_record(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert flat Bulk API CSV rows into the nested structure used by REST queries."""
+        record: Dict[str, Any] = {}
+
+        for key, value in row.items():
+            value = None if value == '' else value
+
+            if '.' not in key:
+                record[key] = value
+                continue
+
+            parts = key.split('.')
+            current = record
+            for part in parts[:-1]:
+                current = current.setdefault(part, {})
+            current[parts[-1]] = value
+
+        return record
+
+    def _iter_bulk_records(self, response: requests.Response) -> Iterable[Dict[str, Any]]:
+        """Stream Bulk API CSV results to avoid materializing an entire batch in memory."""
+        response.raw.decode_content = True
+        csv_stream = io.TextIOWrapper(cast(BinaryIO, response.raw), encoding='utf-8', newline='')
+        csv_reader = csv.DictReader(csv_stream)
+
+        try:
+            for row in csv_reader:
+                yield self._build_nested_record(row)
+        finally:
+            csv_stream.close()
 
     def query_rest(self, soql_query: str, record_type: str = "records") -> List[Dict[str, Any]]:
         """
@@ -53,7 +91,11 @@ class SalesforceRestClient:
         
         try:
             while url:
-                response = requests.get(url, params=params if params else None, headers=self.headers)
+                response = self.session.get(
+                    url,
+                    params=params if params else None,
+                    timeout=self.request_timeout,
+                )
                 response.raise_for_status()
                 
                 result = response.json()
@@ -93,7 +135,11 @@ class SalesforceRestClient:
                 "operation": "query",
                 "query": soql_query
             }
-            response = requests.post(bulk_url, json=job_data, headers=self.headers)
+            response = self.session.post(
+                bulk_url,
+                json=job_data,
+                timeout=self.request_timeout,
+            )
             response.raise_for_status()
             job_info = response.json()
             job_id = job_info['id']
@@ -109,7 +155,7 @@ class SalesforceRestClient:
                 time.sleep(poll_interval)
                 wait_time += poll_interval
                 
-                response = requests.get(job_status_url, headers=self.headers)
+                response = self.session.get(job_status_url, timeout=self.request_timeout)
                 response.raise_for_status()
                 job_info = response.json()
                 state = job_info['state']
@@ -154,39 +200,25 @@ class SalesforceRestClient:
                     logger.info(f"Fetching batch {batch_count} with locator...")
                 else:
                     batch_url = results_url
-                
-                response = requests.get(batch_url, headers=headers_csv, stream=True)
-                response.raise_for_status()
-                
-                # Parse CSV batch directly into all_records (avoid intermediate list)
-                csv_content = response.content.decode('utf-8')
-                csv_reader = csv.DictReader(io.StringIO(csv_content))
-                batch_start = len(all_records)
-                
-                for row in csv_reader:
-                    # Convert CSV row to match REST API nested structure
-                    record = {}
-                    for key, value in row.items():
-                        # Convert empty strings to None
-                        value = None if value == '' else value
-                        
-                        # Handle nested fields (e.g., "c2g__Transaction__r.c2g__Period__r.Name")
-                        if '.' in key:
-                            parts = key.split('.')
-                            current = record
-                            for part in parts[:-1]:
-                                current = current.setdefault(part, {})
-                            current[parts[-1]] = value
-                        else:
-                            record[key] = value
-                    
-                    all_records.append(record)
+
+                with self.session.get(
+                    batch_url,
+                    headers=headers_csv,
+                    stream=True,
+                    timeout=self.request_timeout,
+                ) as response:
+                    response.raise_for_status()
+                    batch_start = len(all_records)
+
+                    for record in self._iter_bulk_records(response):
+                        all_records.append(record)
+
+                    # Check for more batches via Sforce-Locator header before the response closes
+                    locator = response.headers.get('Sforce-Locator')
                 
                 batch_size = len(all_records) - batch_start
                 logger.info(f"Batch {batch_count}: Retrieved {batch_size} records (total: {len(all_records)})")
-                
-                # Check for more batches via Sforce-Locator header
-                locator = response.headers.get('Sforce-Locator')
+
                 if not locator or locator.lower() == 'null':
                     break
             

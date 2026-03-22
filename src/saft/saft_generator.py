@@ -34,6 +34,7 @@ class SAFTGenerator:
             config: Configuration dictionary
         """
         self.config = config
+        self._country_code_cache: Dict[str, str] = {}
     
     def _elem(self, parent: ET.Element, name: str, text: 'Optional[str]' = None) -> ET.Element:
         """
@@ -68,26 +69,36 @@ class SAFTGenerator:
         if not normalized:
             return "BG"
 
+        cached = self._country_code_cache.get(normalized)
+        if cached:
+            return cached
+
         normalized = self.LEGACY_COUNTRY_NAMES.get(normalized.lower(), normalized)
         normalized_upper = normalized.upper()
 
         alias_match = self.COUNTRY_CODE_ALIASES.get(normalized_upper)
         if alias_match:
+            self._country_code_cache[str(country).strip()] = alias_match
             return alias_match
 
         if len(normalized) == 2 and normalized.isalpha():
+            self._country_code_cache[str(country).strip()] = normalized_upper
             return normalized_upper
 
         direct_match = pycountry.countries.get(name=normalized)
         if direct_match:
+            self._country_code_cache[str(country).strip()] = direct_match.alpha_2
             return direct_match.alpha_2
 
         search_term = normalized.replace('.', ' ')
 
         try:
-            return pycountry.countries.search_fuzzy(search_term)[0].alpha_2
+            country_code = pycountry.countries.search_fuzzy(search_term)[0].alpha_2
         except LookupError:
-            return normalized
+            country_code = normalized
+
+        self._country_code_cache[str(country).strip()] = country_code
+        return country_code
 
     def _truncate_text(self, value: Optional[str], max_length: int) -> str:
         """Trim text values to the maximum length allowed by the XSD."""
@@ -564,6 +575,19 @@ class SAFTGenerator:
         if exchange_rate:
             self._elem(amount_elem, "ExchangeRate", exchange_rate)
         return amount_elem
+
+    def _add_document_summary(self, parent: ET.Element, entries: list):
+        """Write NumberOfEntries, TotalDebit, and TotalCredit using a single pass."""
+        total_debit = 0.0
+        total_credit = 0.0
+
+        for entry in entries:
+            total_debit += entry.get('total_debit', 0)
+            total_credit += entry.get('total_credit', 0)
+
+        self._elem(parent, "NumberOfEntries", str(len(entries)))
+        self._elem(parent, "TotalDebit", f"{total_debit:.2f}")
+        self._elem(parent, "TotalCredit", f"{total_credit:.2f}")
     
     def _add_products(self, parent: ET.Element, products: list):
         """Add Products section from Salesforce Product2 records"""
@@ -607,9 +631,7 @@ class SAFTGenerator:
             invoices: List of sales invoices
         """
         logger.info(f"Adding {len(invoices)} sales invoices...")
-        self._elem(parent, "NumberOfEntries", str(len(invoices)))
-        self._elem(parent, "TotalDebit", f"{sum(inv.get('total_debit', 0) for inv in invoices):.2f}")
-        self._elem(parent, "TotalCredit", f"{sum(inv.get('total_credit', 0) for inv in invoices):.2f}")
+        self._add_document_summary(parent, invoices)
         
         for invoice in invoices:
             inv_elem = self._elem(parent, "Invoice")
@@ -707,9 +729,7 @@ class SAFTGenerator:
             payments: List of payment transactions
         """
         logger.info(f"Adding {len(payments)} payment transactions...")
-        self._elem(parent, "NumberOfEntries", str(len(payments)))
-        self._elem(parent, "TotalDebit", f"{sum(pay.get('total_debit', 0) for pay in payments):.2f}")
-        self._elem(parent, "TotalCredit", f"{sum(pay.get('total_credit', 0) for pay in payments):.2f}")
+        self._add_document_summary(parent, payments)
         
         for payment in payments:
             pay_elem = self._elem(parent, "Payment")
@@ -761,9 +781,7 @@ class SAFTGenerator:
         """
         invoice_count = len(invoices) if invoices else 0
         logger.info(f"Adding {invoice_count} purchase invoices...")
-        self._elem(parent, "NumberOfEntries", str(invoice_count))
-        self._elem(parent, "TotalDebit", f"{sum(inv.get('total_debit', 0) for inv in invoices):.2f}")
-        self._elem(parent, "TotalCredit", f"{sum(inv.get('total_credit', 0) for inv in invoices):.2f}")
+        self._add_document_summary(parent, invoices)
         
         if not invoices:
             return
@@ -793,6 +811,7 @@ class SAFTGenerator:
             self._elem(invoice_elem, "SystemID", invoice.get('system_id', ''))
             self._elem(invoice_elem, "TransactionID", invoice.get('invoice_no', ''))
             self._elem(invoice_elem, "ReceiptNumbers", "")
+            invoice_tax_total = 0.0
             
             # Lines
             for line in invoice.get('lines', []):
@@ -826,6 +845,7 @@ class SAFTGenerator:
                 self._elem(line_elem, "DebitCreditIndicator", indicator)
 
                 tax_value = float(line.get('tax_amount', 0) or 0)
+                invoice_tax_total += tax_value
                 tax_info = self._elem(line_elem, "TaxInformation")
                 self._elem(tax_info, "TaxType", "100010")
                 self._elem(tax_info, "TaxCode", "110010")
@@ -840,4 +860,4 @@ class SAFTGenerator:
             # Document totals
             doc_totals = self._elem(invoice_elem, "InvoiceDocumentTotals")
             self._elem(doc_totals, "NetTotal", f"{invoice.get('total_debit', 0):.2f}")
-            self._elem(doc_totals, "GrossTotal", f"{invoice.get('total_debit', 0) + sum(l.get('tax_amount', 0) for l in invoice.get('lines', [])):.2f}")
+            self._elem(doc_totals, "GrossTotal", f"{invoice.get('total_debit', 0) + invoice_tax_total:.2f}")

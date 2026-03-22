@@ -261,7 +261,11 @@ class CertiniaTransformer:
         # This is ~3x faster than calculating separately for each account type
         transaction_lines = data.get('transaction_lines', [])
         logger.info(f"Calculating balances for all account types in single pass ({len(transaction_lines)} transaction lines)...")
-        gl_balances, account_balances = self._calculate_all_balances(transaction_lines, gl_account_codes)
+        gl_balances, _ = self._calculate_all_balances(
+            transaction_lines,
+            gl_account_codes,
+            include_account_balances=False,
+        )
         
         return {
             'general_ledger_accounts': self._transform_gl_accounts(
@@ -304,7 +308,8 @@ class CertiniaTransformer:
         transformed.sort(key=lambda x: x['account_id'] or '')
         return transformed
     
-    def _calculate_all_balances(self, transaction_lines: List[Dict], gl_account_codes: Dict[str, str] | None = None) -> tuple[Dict[str, Dict], Dict[str, Dict]]:
+    def _calculate_all_balances(self, transaction_lines: List[Dict], gl_account_codes: Dict[str, str] | None = None,
+                                include_account_balances: bool = True) -> tuple[Dict[str, Dict], Dict[str, Dict]]:
         """Calculate balances for GL accounts and c2g__Account__c in a single pass
         
         This consolidates balance calculations to process transaction lines only once,
@@ -313,6 +318,7 @@ class CertiniaTransformer:
         Args:
             transaction_lines: List of transaction line items
             gl_account_codes: Mapping of GL account Id to ReportingCode for natural side determination
+            include_account_balances: Whether to accumulate c2g__Account__c balances in addition to GLA balances
         
         Returns:
             Tuple of (gl_account_balances, account_balances) dictionaries
@@ -353,7 +359,7 @@ class CertiniaTransformer:
             
             if not gl_account_id:
                 skipped_no_gl_account += 1
-            if not account_id:
+            if include_account_balances and not account_id:
                 skipped_no_account += 1
             
             net_value = self._get_net_value(line)
@@ -381,7 +387,7 @@ class CertiniaTransformer:
                         gl_closing_credits[gl_account_id] += abs(net_value)
             
             # Process c2g__Account__c balances
-            if account_id:
+            if include_account_balances and account_id:
                 if is_opening:
                     if net_value > 0:
                         acc_opening_debits[account_id] += net_value
@@ -396,13 +402,16 @@ class CertiniaTransformer:
         
         # Log statistics
         gl_accounts = gl_opening_debits.keys() | gl_opening_credits.keys() | gl_closing_debits.keys() | gl_closing_credits.keys()
-        accounts = acc_opening_debits.keys() | acc_opening_credits.keys() | acc_closing_debits.keys() | acc_closing_credits.keys()
+        accounts = (
+            acc_opening_debits.keys() | acc_opening_credits.keys() | acc_closing_debits.keys() | acc_closing_credits.keys()
+            if include_account_balances else set()
+        )
         
         logger.info(f"Balance calculation complete: {len(gl_accounts)} GL accounts, {len(accounts)} c2g__Account__c records")
         logger.info(f"  Total transaction lines analyzed: {len(transaction_lines)}")
         if skipped_no_gl_account > 0:
             logger.warning(f"  Skipped {skipped_no_gl_account} transactions with no GL account ID")
-        if skipped_no_account > 0:
+        if include_account_balances and skipped_no_account > 0:
             logger.warning(f"  Skipped {skipped_no_account} transactions with no c2g__Account__c ID")
         if skipped_no_period > 0:
             logger.warning(f"  Skipped {skipped_no_period} transactions with no period number")
@@ -411,8 +420,11 @@ class CertiniaTransformer:
         gl_balances = self._convert_debit_credit_to_net_position(
             gl_opening_debits, gl_opening_credits, gl_closing_debits, gl_closing_credits, gl_account_codes
         )
-        account_balances = self._convert_debit_credit_to_net_position(
-            acc_opening_debits, acc_opening_credits, acc_closing_debits, acc_closing_credits
+        account_balances = (
+            self._convert_debit_credit_to_net_position(
+                acc_opening_debits, acc_opening_credits, acc_closing_debits, acc_closing_credits
+            )
+            if include_account_balances else {}
         )
         
         return gl_balances, account_balances
