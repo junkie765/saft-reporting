@@ -9,6 +9,8 @@ from datetime import datetime
 import json
 import os
 import logging
+from pathlib import Path
+import webbrowser
 
 from ..salesforce.auth import get_authenticated_client
 
@@ -200,6 +202,7 @@ class SaftReportingUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=0)
         self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=1)
         
         # Main frame with padding (parameters)
         main_frame = ttk.Frame(self.root, padding="20")
@@ -317,6 +320,53 @@ class SaftReportingUI:
         )
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         log_scroll.config(command=self.log_text.yview)
+
+        validation_frame = ttk.LabelFrame(self.root, text="Schema Validation", padding="10")
+        validation_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        validation_frame.columnconfigure(0, weight=1)
+        validation_frame.rowconfigure(1, weight=1)
+
+        self.validation_summary_var = tk.StringVar(value="Validation has not been run yet.")
+        ttk.Label(validation_frame, textvariable=self.validation_summary_var).grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
+        )
+
+        validation_table_frame = ttk.Frame(validation_frame)
+        validation_table_frame.grid(row=1, column=0, sticky="nsew")
+        validation_table_frame.columnconfigure(0, weight=1)
+        validation_table_frame.rowconfigure(0, weight=1)
+
+        validation_scroll_y = ttk.Scrollbar(validation_table_frame, orient=tk.VERTICAL)
+        validation_scroll_x = ttk.Scrollbar(validation_table_frame, orient=tk.HORIZONTAL)
+
+        self.validation_tree = ttk.Treeview(
+            validation_table_frame,
+            columns=("file", "status", "location", "salesforce_record", "message"),
+            show="headings",
+            yscrollcommand=validation_scroll_y.set,
+            xscrollcommand=validation_scroll_x.set,
+            height=8,
+        )
+        self.validation_tree.heading("file", text="File")
+        self.validation_tree.heading("status", text="Status")
+        self.validation_tree.heading("location", text="Location")
+        self.validation_tree.heading("message", text="Message")
+        self.validation_tree.heading("salesforce_record", text="Salesforce Record")
+        self.validation_tree.column("file", width=220, anchor=tk.W)
+        self.validation_tree.column("status", width=90, anchor=tk.CENTER)
+        self.validation_tree.column("location", width=110, anchor=tk.CENTER)
+        self.validation_tree.column("message", width=520, anchor=tk.W)
+        self.validation_tree.column("salesforce_record", width=360, anchor=tk.W)
+        self.validation_tree.tag_configure("VALID", foreground="#1f7a1f")
+        self.validation_tree.tag_configure("INVALID", foreground="#9f2f1f")
+        self.validation_tree.tag_configure("ERROR", foreground="#b36b00")
+        self.validation_tree.grid(row=0, column=0, sticky="nsew")
+        self.validation_tree.bind("<ButtonRelease-1>", self._on_validation_tree_click)
+
+        validation_scroll_y.grid(row=0, column=1, sticky="ns")
+        validation_scroll_x.grid(row=1, column=0, sticky="ew")
+        validation_scroll_y.config(command=self.validation_tree.yview)
+        validation_scroll_x.config(command=self.validation_tree.xview)
         
         # Configure text tags for colored output
         self.log_text.tag_config('info', foreground='#4ec9b0')
@@ -326,7 +376,7 @@ class SaftReportingUI:
         
         # Progress bar
         self.progress = ttk.Progressbar(self.root, mode='indeterminate')
-        self.progress.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        self.progress.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
         
         # Initially hide progress bar
         self.progress.grid_remove()
@@ -360,6 +410,7 @@ class SaftReportingUI:
     def _generate_report(self):
         """Handle report generation"""
         if self._validate_inputs():
+            self.clear_validation_results()
             # Disable all input fields and Generate button to prevent changes during processing
             self._disable_inputs()
             
@@ -466,6 +517,57 @@ class SaftReportingUI:
         self.report_type_combo.config(state="readonly")
         self.export_excel_check.config(state="normal")
         self.generate_button.config(state="normal")
+
+    def clear_validation_results(self):
+        """Clear the validation summary and table."""
+        self.validation_summary_var.set("Validation has not been run yet.")
+        for item in self.validation_tree.get_children():
+            self.validation_tree.delete(item)
+
+    def _on_validation_tree_click(self, event):
+        """Open the Salesforce record when the record column is clicked."""
+        region = self.validation_tree.identify("region", event.x, event.y)
+        column = self.validation_tree.identify_column(event.x)
+        row_id = self.validation_tree.identify_row(event.y)
+
+        if region != "cell" or column != "#4" or not row_id:
+            return
+
+        values = self.validation_tree.item(row_id, "values")
+        if len(values) < 4:
+            return
+
+        record_url = values[3]
+        if record_url and record_url != "-":
+            webbrowser.open_new_tab(record_url)
+
+    def show_validation_results(self, issues, result_path, checked_count, invalid_count):
+        """Render schema validation results in the table."""
+        self.clear_validation_results()
+
+        result_name = Path(result_path).name
+        if invalid_count == 0:
+            summary = f"Checked {checked_count} file(s). No schema errors found. Result XML: {result_name}"
+        else:
+            summary = (
+                f"Checked {checked_count} file(s). {invalid_count} file(s) with validation errors. "
+                f"Click a Salesforce Record link to open it. Result XML: {result_name}"
+            )
+        self.validation_summary_var.set(summary)
+
+        for issue in issues:
+            location = "-"
+            if issue.line is not None:
+                location = f"{issue.line}:{issue.column or 0}"
+            record_address = issue.salesforce_record_address or "-"
+            self.validation_tree.insert(
+                "",
+                tk.END,
+                values=(issue.file_path.name, issue.status, location, record_address, issue.message),
+                tags=(issue.status,),
+            )
+
+        self.root.update()
 
 
 def launch_ui(config_path=None):

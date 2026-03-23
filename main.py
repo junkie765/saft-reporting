@@ -12,6 +12,7 @@ from src.transformers.certinia_transformer import CertiniaTransformer
 from src.saft.saft_generator import SAFTGenerator
 from src.utils.logger import setup_logger
 from src.utils.excel_exporter import ExcelExporter
+from src.utils.xml_validator import DEFAULT_SCHEMA_PATH, validate_target
 
 
 def load_config(config_path: str = 'config.json') -> dict:
@@ -32,7 +33,7 @@ def load_config(config_path: str = 'config.json') -> dict:
             config = json.load(f)
         
         # Validate required config sections
-        required_sections = ['salesforce', 'saft', 'certinia', 'output']
+        required_sections = ['salesforce', 'saft', 'certinia', 'output', 'validation']
         missing_sections = [s for s in required_sections if s not in config]
         if missing_sections:
             logging.error(f"Missing required config sections: {', '.join(missing_sections)}")
@@ -283,6 +284,35 @@ def main():
                 excel_exporter.export(certinia_data, excel_path, start_date, saft_data)
                 step_duration = time.time() - step_start
                 logger.info(f"✓ Excel file generated: {excel_path} (took {step_duration:.2f}s)")
+
+            # Step 6: Validate generated XML against the schema
+            logger.info("Step 6: Validating SAF-T XML against the Bulgarian schema...")
+            step_start = time.time()
+            validation_result_path = output_path.with_name(f"{output_path.stem}_validation_result.xml")
+            validation_report = validate_target(
+                output_path,
+                schema_path=config.get('validation', {}).get('schema_path', str(DEFAULT_SCHEMA_PATH)),
+                result_xml=validation_result_path,
+                salesforce_base_url=rest_client.instance_url,
+                saft_data=saft_data,
+            )
+            ui_app.show_validation_results(
+                validation_report.issues,
+                validation_report.result_path,
+                len(validation_report.checked_files),
+                validation_report.invalid_count,
+            )
+            step_duration = time.time() - step_start
+            if validation_report.invalid_count == 0:
+                logger.info(
+                    f"✓ XML schema validation passed: {validation_report.result_path} "
+                    f"(took {step_duration:.2f}s)"
+                )
+            else:
+                logger.warning(
+                    f"XML schema validation found issues in {validation_report.invalid_count} file(s). "
+                    f"Results saved to {validation_report.result_path} (took {step_duration:.2f}s)"
+                )
             
             # Calculate total execution time
             total_duration = time.time() - total_start_time
@@ -291,8 +321,12 @@ def main():
             
             # Summaryd
             logger.info("=" * 80)
-            logger.info("Export completed successfully!", extra={'level': 'SUCCESS'})
+            if validation_report.invalid_count == 0:
+                logger.info("Export and schema validation completed successfully!", extra={'level': 'SUCCESS'})
+            else:
+                logger.warning("Export completed, but schema validation reported issues.")
             logger.info(f"SAF-T XML file: {output_path.absolute()}")
+            logger.info(f"Validation result file: {validation_result_path.absolute()}")
             logger.info(f"File size: {output_path.stat().st_size / 1024:.2f} KB")
             logger.info(f"Total execution time: {total_duration:.2f}s ({minutes} minutes and {seconds} seconds)")
             logger.info("=" * 80)
@@ -301,7 +335,10 @@ def main():
             ui_app.stop_progress()
             ui_app._enable_inputs()
             ui_app.selections_ready = False
-            ui_app.log("Process completed successfully. You can generate another report or close this window.", "SUCCESS")
+            if validation_report.invalid_count == 0:
+                ui_app.log("Process completed successfully. You can generate another report or close this window.", "SUCCESS")
+            else:
+                ui_app.log("Process completed, but schema validation found issues. Review the validation table and result XML.", "WARNING")
             
             # Wait for next report generation
             ui_app.root.mainloop()

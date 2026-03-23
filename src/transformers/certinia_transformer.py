@@ -306,6 +306,7 @@ class CertiniaTransformer:
         transformed = [
             {
                 'account_id': account.get('c2g__StandardAccountID__c') or account.get('c2g__ReportingCode__c') or account.get('Name', ''),
+                'source_salesforce_id': account.get('Id', ''),
                 'account_description': account.get('F_Bulgarian_GLA_Name__c', ''),
                 'account_type': account.get('c2g__Type__c', ''),
                 'taxpayer_account_id': account.get('c2g__ReportingCode__c') or account.get('Name', ''),
@@ -622,6 +623,7 @@ class CertiniaTransformer:
             
             transformed.append({
                 'customer_id': self._format_customer_supplier_id(vat_registration or tax_id, group, name, acc_number),
+                'source_salesforce_id': account_id,
                 'account_id': gl_account_id or acc.get('AccountNumber', ''),
                 'customer_tax_id': vat_registration or tax_id,
                 'company_name': acc.get('Name', ''),
@@ -696,6 +698,7 @@ class CertiniaTransformer:
             
             transformed.append({
                 'supplier_id': self._format_customer_supplier_id(vat_registration or tax_id, group, name, acc_number),
+                'source_salesforce_id': account_id,
                 'account_id': gl_account_id or acc.get('AccountNumber', ''),
                 'supplier_tax_id': vat_registration or tax_id,
                 'company_name': acc.get('Name', ''),
@@ -785,14 +788,6 @@ class CertiniaTransformer:
                     gl_account.get('c2g__ReportingCode__c') or
                     line.get('c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c', '')
                 )
-
-                if not (gl_account.get('c2g__StandardAccountID__c') or line.get('c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c')):
-                    logger.warning(
-                        "Journal line %s in journal %s is missing c2g__StandardAccountID__c; using fallback account value '%s'",
-                        line.get('Id', '<unknown>'),
-                        journal_id or '<unknown>',
-                        account_id,
-                    )
                 
                 transaction['lines'].append({
                     'record_id': str(line_number),
