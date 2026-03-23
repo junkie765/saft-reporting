@@ -364,7 +364,9 @@ class SalesforceRestClient:
                 SELECT Id, Name, fferpcore__BillingDocument__c, c2g__GeneralLedgerAccount__c,
                        c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
                        c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                       fferpcore__ProductService__c, fferpcore__ProductService__r.ProductCode, fferpcore__ProductService__r.Name,
+                      fferpcore__ProductService__c, fferpcore__ProductService__r.ProductCode, fferpcore__ProductService__r.Name,
+                      fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__StandardAccountID__c,
+                      fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__ReportingCode__c,
                        fferpcore__Quantity__c, fferpcore__UnitPrice__c, fferpcore__NetValue__c,
                        fferpcore__LineDescription__c, fferpcore__TaxCode1__c, fferpcore__TaxCode1__r.Name,
                        fferpcore__TaxValue1__c

@@ -873,10 +873,19 @@ class CertiniaTransformer:
                 
                 product_info = line.get('fferpcore__ProductService__r') or {}
                 gl_account = line.get('c2g__GeneralLedgerAccount__r') or {}
+                product_revenue_account = product_info.get('c2g__CODASalesRevenueAccount__r') or {}
+                account_id = (
+                    gl_account.get('c2g__StandardAccountID__c') or
+                    gl_account.get('c2g__ReportingCode__c') or
+                    product_revenue_account.get('c2g__StandardAccountID__c') or
+                    line.get('fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__StandardAccountID__c') or
+                    product_revenue_account.get('c2g__ReportingCode__c') or
+                    line.get('fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__ReportingCode__c', '')
+                )
                 
                 transformed_lines.append({
                     'line_number': str(line_number),
-                    'account_id': gl_account.get('c2g__StandardAccountID__c') or gl_account.get('c2g__ReportingCode__c', ''),
+                    'account_id': account_id,
                     'product_code': product_info.get('ProductCode', ''),
                     'product_description': product_info.get('Name', ''),
                     'quantity': quantity,
