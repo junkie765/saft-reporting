@@ -706,8 +706,10 @@ class SAFTGenerator:
                 self._elem(shipping, "CurrencyAmount", "0.00")
                 
                 tax_info = self._elem(line_elem, "TaxInformation")
-                self._elem(tax_info, "TaxType", "100010")
-                self._elem(tax_info, "TaxCode", "110010")
+                self._elem(tax_info, "TaxType", line.get('tax_type', '000'))
+                self._elem(tax_info, "TaxCode", line.get('tax_code', '000000'))
+                if line.get('tax_percentage', 0):
+                    self._elem(tax_info, "TaxPercentage", f"{line['tax_percentage']:.2f}")
                 tax_amt = self._elem(tax_info, "TaxAmount")
                 self._elem(tax_amt, "Amount", f"{line['tax_amount']:.2f}")
                 self._elem(tax_amt, "CurrencyCode", "BGN")
@@ -840,10 +842,10 @@ class SAFTGenerator:
                 tax_value = float(line.get('tax_amount', 0) or 0)
                 invoice_tax_total += tax_value
                 tax_info = self._elem(line_elem, "TaxInformation")
-                self._elem(tax_info, "TaxType", "100010")
-                self._elem(tax_info, "TaxCode", "110010")
+                self._elem(tax_info, "TaxType", line.get('tax_type', '000'))
+                self._elem(tax_info, "TaxCode", line.get('tax_code', '000000'))
                 if tax_value > 0:
-                    self._elem(tax_info, "TaxPercentage", "20.00")
+                    self._elem(tax_info, "TaxPercentage", f"{line.get('tax_percentage', 0):.2f}")
                     self._elem(tax_info, "TaxBase", f"{line_amount:.2f}")
                 tax_amount = self._elem(tax_info, "TaxAmount")
                 self._elem(tax_amount, "Amount", f"{tax_value:.2f}")

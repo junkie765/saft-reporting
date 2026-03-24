@@ -188,6 +188,43 @@ class TestBalanceLogic(unittest.TestCase):
         self.assertEqual(transformed[0]['journal_id'], 'Actual Journal Name')
         self.assertEqual(transformed[0]['lines'][0]['account_id'], '5030')
 
+    def test_transaction_line_tax_uses_taxcode1_standard_code(self):
+        """Transaction-line tax must come from TaxCode1.StandardCodeID."""
+        tax_info = self.transformer._extract_transaction_line_tax_info({
+            'c2g__TaxCode1__c': 'a012345',
+            'c2g__TaxCode1__r': {
+                'c2g__StandardCodeID__c': '220101'
+            }
+        })
+
+        self.assertEqual(tax_info['tax_type'], '220')
+        self.assertEqual(tax_info['tax_code'], '220101')
+        self.assertEqual(tax_info['tax_percentage'], 0.0)
+
+    def test_transaction_line_tax_defaults_when_taxcode1_missing(self):
+        """Missing TaxCode1 must fall back to the SAF-T default tax markers."""
+        tax_info = self.transformer._extract_transaction_line_tax_info({})
+
+        self.assertEqual(tax_info['tax_type'], self.transformer.DEFAULT_TAX_TYPE)
+        self.assertEqual(tax_info['tax_code'], self.transformer.DEFAULT_TAX_CODE)
+        self.assertEqual(tax_info['tax_percentage'], 0.0)
+
+    def test_sales_invoice_tax_uses_billing_document_tax_code_foundations_path(self):
+        """Sales invoice tax must come from TaxCode1 -> Tax Code Foundations -> Account Tax Code."""
+        tax_info = self.transformer._extract_sales_invoice_line_tax_info({
+            'fferpcore__TaxCode1__c': 'a0T12345',
+            'fferpcore__TaxCode1__r': {
+                'c2g__msg_link_ffa_id__c': 'a0A12345',
+                'c2g__msg_link_ffa_id__r': {
+                    'c2g__StandardCodeID__c': '500020'
+                }
+            }
+        }, tax_percentage=20)
+
+        self.assertEqual(tax_info['tax_type'], '500')
+        self.assertEqual(tax_info['tax_code'], '500020')
+        self.assertEqual(tax_info['tax_percentage'], 20.0)
+
     def test_journal_xml_uses_transformed_journal_name_for_journal_id(self):
         """JournalID should be written from the transformed journal Name field."""
         generator = SAFTGenerator({})
@@ -485,8 +522,8 @@ class TestBalanceLogic(unittest.TestCase):
         tax_info = line_elem.find('ns:TaxInformation', namespace)
 
         self.assertIsNotNone(tax_info)
-        self.assertEqual(tax_info.find('ns:TaxType', namespace).text, '100010')
-        self.assertEqual(tax_info.find('ns:TaxCode', namespace).text, '110010')
+        self.assertEqual(tax_info.find('ns:TaxType', namespace).text, '000')
+        self.assertEqual(tax_info.find('ns:TaxCode', namespace).text, '000000')
         self.assertEqual(tax_info.find('ns:TaxAmount/ns:Amount', namespace).text, '0.00')
 
     def test_purchase_invoice_writes_supplier_info_before_invoice_date(self):
@@ -794,6 +831,47 @@ class TestBalanceLogic(unittest.TestCase):
         self.assertIsNotNone(customer_info)
         self.assertIsNotNone(customer_info.find('ns:BillingAddress', namespace))
         self.assertIsNone(customer_info.find('ns:Address', namespace))
+
+    def test_sales_invoice_line_uses_transformed_tax_values(self):
+        """Sales invoice XML must write tax type and tax code from transformed invoice lines."""
+        generator = SAFTGenerator({})
+        root = ET.Element(f"{{{generator.NAMESPACE}}}Root")
+
+        generator._add_sales_invoices(root, [{
+            'invoice_no': 'BD-2',
+            'customer_id': 'CUST-1',
+            'customer_name': 'Customer 1',
+            'period': 2,
+            'period_year': 2026,
+            'invoice_date': '2026-02-03',
+            'gl_posting_date': '2026-02-03',
+            'system_id': 'INV-2',
+            'total_debit': 0,
+            'total_credit': 100,
+            'lines': [{
+                'line_number': '1',
+                'account_id': '411',
+                'product_code': 'P1',
+                'product_description': 'Product',
+                'quantity': 1,
+                'unit_price': 100,
+                'description': 'Line',
+                'line_amount': 100,
+                'debit_credit_indicator': 'C',
+                'tax_amount': 20,
+                'tax_type': '500',
+                'tax_code': '500020',
+                'tax_percentage': 20,
+            }],
+        }])
+
+        namespace = {'ns': generator.NAMESPACE}
+        tax_info = root.find('ns:Invoice/ns:InvoiceLine/ns:TaxInformation', namespace)
+
+        self.assertIsNotNone(tax_info)
+        self.assertEqual(tax_info.find('ns:TaxType', namespace).text, '500')
+        self.assertEqual(tax_info.find('ns:TaxCode', namespace).text, '500020')
+        self.assertEqual(tax_info.find('ns:TaxPercentage', namespace).text, '20.00')
 
     def test_address_truncates_street_name_to_xsd_limit(self):
         """StreetName must be capped at the 70-character XSD limit."""

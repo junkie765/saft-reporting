@@ -368,7 +368,9 @@ class SalesforceRestClient:
                       fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__StandardAccountID__c,
                       fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__ReportingCode__c,
                        fferpcore__Quantity__c, fferpcore__UnitPrice__c, fferpcore__NetValue__c,
-                       fferpcore__LineDescription__c, fferpcore__TaxCode1__c, fferpcore__TaxCode1__r.Name,
+                      fferpcore__LineDescription__c, fferpcore__TaxCode1__c,
+                      fferpcore__TaxCode1__r.c2g__msg_link_ffa_id__c,
+                      fferpcore__TaxCode1__r.c2g__msg_link_ffa_id__r.c2g__StandardCodeID__c,
                        fferpcore__TaxValue1__c
                 FROM {objects_config['invoice_line']}
                 WHERE fferpcore__BillingDocument__r.fferpcore__DocumentDate__c >= {start_str}
@@ -437,6 +439,7 @@ class SalesforceRestClient:
         transaction_line_query = f"""
             SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
                    c2g__HomeCredits__c, c2g__HomeDebits__c,
+                                     c2g__TaxCode1__c, c2g__TaxCode1__r.c2g__StandardCodeID__c,
                    c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name,
                    c2g__Transaction__r.c2g__Period__r.Name,
                    c2g__Transaction__r.c2g__Period__r.c2g__PeriodNumber__c,

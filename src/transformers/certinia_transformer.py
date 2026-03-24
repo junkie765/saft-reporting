@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 class CertiniaTransformer:
     """Transform Certinia data to SAF-T structure"""
+
+    DEFAULT_TAX_TYPE = '000'
+    DEFAULT_TAX_CODE = '000000'
     
     def __init__(self, config: dict):
         """
@@ -245,6 +248,129 @@ class CertiniaTransformer:
         if 'RecordType' in record and isinstance(record['RecordType'], dict):
             return record['RecordType'].get('Name', '')
         return record.get('RecordType.Name', '')
+
+    def _get_nested_value(self, record: Dict[str, Any], path: str) -> Any:
+        """Read a value from flattened SOQL keys or nested dictionaries."""
+        if path in record:
+            return record[path]
+
+        current: Any = record
+        for part in path.split('.'):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+            if current is None:
+                return None
+        return current
+
+    def _normalize_tax_code(self, tax_code: Any) -> str:
+        """Normalize tax codes to configured defaults when no valid code exists."""
+        normalized = str(tax_code or '').strip()
+        if not normalized or normalized == '00000':
+            return self.DEFAULT_TAX_CODE
+        return normalized
+
+    def _derive_tax_type_from_code(self, tax_code: str) -> str:
+        """Derive tax type from the first three digits of a tax code."""
+        if tax_code == self.DEFAULT_TAX_CODE:
+            return self.DEFAULT_TAX_TYPE
+
+        tax_code_prefix = str(tax_code)[:3]
+        if len(tax_code_prefix) == 3 and tax_code_prefix.isdigit():
+            return tax_code_prefix
+
+        return self.DEFAULT_TAX_TYPE
+
+    def _build_tax_info(self, tax_code: Any = None, tax_type: str = '', tax_percentage: Any = 0.0) -> Dict[str, Any]:
+        """Build normalized tax metadata for XML export."""
+        normalized_code = self._normalize_tax_code(tax_code)
+        normalized_type = str(tax_type or '').strip()
+
+        if normalized_code == self.DEFAULT_TAX_CODE:
+            normalized_type = self.DEFAULT_TAX_TYPE
+        elif not normalized_type or normalized_type == '100010':
+            normalized_type = self._derive_tax_type_from_code(normalized_code)
+
+        return {
+            'tax_type': normalized_type,
+            'tax_code': normalized_code,
+            'tax_percentage': self._parse_decimal(tax_percentage),
+        }
+
+    def _get_transaction_line_amounts(self, line: Dict[str, Any]) -> tuple[float, float]:
+        """Get rounded debit/credit amounts from a transaction line item."""
+        debit_amount = round(self._parse_decimal(line.get('c2g__HomeDebits__c', 0)), 2)
+        credit_amount = round(self._parse_decimal(line.get('c2g__HomeCredits__c', 0)), 2)
+
+        if debit_amount == 0 and credit_amount == 0:
+            home_value = round(self._parse_decimal(line.get('c2g__HomeValue__c', 0)), 2)
+            if home_value > 0:
+                debit_amount = home_value
+            elif home_value < 0:
+                credit_amount = abs(home_value)
+
+        return debit_amount, credit_amount
+
+    def _extract_transaction_line_tax_info(self, line: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract tax info from TaxCode1 using the related tax code StandardCodeID."""
+        if not line.get('c2g__TaxCode1__c'):
+            return self._build_tax_info()
+
+        tax_code = self._get_nested_value(line, 'c2g__TaxCode1__r.c2g__StandardCodeID__c')
+        if tax_code:
+            return self._build_tax_info(tax_code=tax_code)
+
+        return self._build_tax_info()
+
+    def _extract_sales_invoice_line_tax_info(self, line: Dict[str, Any], tax_percentage: Any = 0.0) -> Dict[str, Any]:
+        """Extract tax info from Billing Document Line Item TaxCode1 through Tax Code Foundations."""
+        if not line.get('fferpcore__TaxCode1__c'):
+            return self._build_tax_info(tax_percentage=tax_percentage)
+
+        tax_code = self._get_nested_value(
+            line,
+            'fferpcore__TaxCode1__r.c2g__msg_link_ffa_id__r.c2g__StandardCodeID__c',
+        )
+        if tax_code:
+            return self._build_tax_info(tax_code=tax_code, tax_percentage=tax_percentage)
+
+        return self._build_tax_info(tax_percentage=tax_percentage)
+
+    def _build_transaction_line_tax_map(self, transaction_lines: List[Dict[str, Any]]) -> Dict[tuple[str, str, float, float], Dict[str, Any]]:
+        """Map transaction line items to tax metadata for GL line export."""
+        tax_map: Dict[tuple[str, str, float, float], Dict[str, Any]] = {}
+        ambiguous_keys = set()
+
+        for line in transaction_lines:
+            gl_account_id = line.get('c2g__GeneralLedgerAccount__c')
+            if not gl_account_id:
+                continue
+
+            transaction_date = self._get_nested_value(line, 'c2g__Transaction__r.c2g__TransactionDate__c') or ''
+            debit_amount, credit_amount = self._get_transaction_line_amounts(line)
+            lookup_key = (gl_account_id, transaction_date, debit_amount, credit_amount)
+            tax_info = self._extract_transaction_line_tax_info(line)
+
+            existing = tax_map.get(lookup_key)
+            if existing is None:
+                tax_map[lookup_key] = tax_info
+                continue
+
+            if existing['tax_type'] != tax_info['tax_type'] or existing['tax_code'] != tax_info['tax_code']:
+                ambiguous_keys.add(lookup_key)
+
+        for lookup_key in ambiguous_keys:
+            tax_map[lookup_key] = self._build_tax_info()
+
+        if ambiguous_keys:
+            logger.warning(
+                "Defaulting %d ambiguous transaction-line tax mappings to %s/%s",
+                len(ambiguous_keys),
+                self.DEFAULT_TAX_TYPE,
+                self.DEFAULT_TAX_CODE,
+            )
+
+        return tax_map
     
     def _transform_master_files(self, data: Dict) -> Dict[str, List]:
         """Transform master data (accounts, customers, suppliers)"""
@@ -729,6 +855,7 @@ class CertiniaTransformer:
         """Transform journal entries to general ledger entries"""
         journals = data.get('journals', [])
         lines = data.get('journal_lines', [])
+        transaction_line_tax_map = self._build_transaction_line_tax_map(data.get('transaction_lines', []))
         
         period_info = self._get_period_info()
         period = period_info['period']
@@ -779,8 +906,8 @@ class CertiniaTransformer:
             
             line_number = 1
             for line in journal_lines:
-                debit_amount = self._parse_decimal(line.get('c2g__Debits__c', 0))
-                credit_amount = self._parse_decimal(line.get('c2g__Credits__c', 0))
+                debit_amount = round(self._parse_decimal(line.get('c2g__Debits__c', 0)), 2)
+                credit_amount = round(self._parse_decimal(line.get('c2g__Credits__c', 0)), 2)
                 gl_account = line.get('c2g__GeneralLedgerAccount__r') or {}
                 account_id = (
                     gl_account.get('c2g__StandardAccountID__c') or
@@ -789,29 +916,41 @@ class CertiniaTransformer:
                     line.get('c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c', '')
                 )
                 
-                transaction['lines'].append({
-                    'record_id': str(line_number),
-                    'account_id': account_id,
-                    'taxpayer_account_id': account_id,
-                    'debit_amount': debit_amount,
-                    'credit_amount': credit_amount,
-                    'description': line.get('c2g__LineDescription__c', ''),
-                    'value_date': journal_date,
-                    'source_document_id': journal_id or '0',
-                    'customer_id': '0',
-                    'supplier_id': '0',
-                    'currency_code': 'BGN',
-                    'exchange_rate': '1.0000',
-                    'tax_type': '',
-                    'tax_code': '',
-                    'tax_percentage': 0,
-                    'tax_base': 0,
-                    'tax_base_description': '',
-                    'tax_amount': 0,
-                    'tax_exemption_reason': '',
-                    'tax_declaration_period': ''
-                })
-                line_number += 1
+                def append_transaction_line(line_debit: float, line_credit: float) -> None:
+                    nonlocal line_number
+                    line_tax = transaction_line_tax_map.get(
+                        (line.get('c2g__GeneralLedgerAccount__c'), journal_date, line_debit, line_credit),
+                        self._build_tax_info(),
+                    )
+                    transaction['lines'].append({
+                        'record_id': str(line_number),
+                        'account_id': account_id,
+                        'taxpayer_account_id': account_id,
+                        'debit_amount': line_debit,
+                        'credit_amount': line_credit,
+                        'description': line.get('c2g__LineDescription__c', ''),
+                        'value_date': journal_date,
+                        'source_document_id': journal_id or '0',
+                        'customer_id': '0',
+                        'supplier_id': '0',
+                        'currency_code': 'BGN',
+                        'exchange_rate': '1.0000',
+                        'tax_type': line_tax['tax_type'],
+                        'tax_code': line_tax['tax_code'],
+                        'tax_percentage': line_tax['tax_percentage'],
+                        'tax_base': 0,
+                        'tax_base_description': '',
+                        'tax_amount': 0,
+                        'tax_exemption_reason': '',
+                        'tax_declaration_period': ''
+                    })
+                    line_number += 1
+
+                if debit_amount > 0 and credit_amount > 0:
+                    append_transaction_line(debit_amount, 0.0)
+                    append_transaction_line(0.0, credit_amount)
+                else:
+                    append_transaction_line(debit_amount, credit_amount)
 
             transformed.append(transaction)
             transaction_id += 1
@@ -870,6 +1009,8 @@ class CertiniaTransformer:
                 tax_value = self._parse_decimal(line.get('fferpcore__TaxValue1__c', 0))
                 quantity = self._parse_decimal(line.get('fferpcore__Quantity__c', 0))
                 unit_price = self._parse_decimal(line.get('fferpcore__UnitPrice__c', 0))
+                tax_percentage = round((tax_value / net_value) * 100, 2) if net_value and tax_value else 0
+                line_tax = self._extract_sales_invoice_line_tax_info(line, tax_percentage=tax_percentage)
                 
                 product_info = line.get('fferpcore__ProductService__r') or {}
                 gl_account = line.get('c2g__GeneralLedgerAccount__r') or {}
@@ -892,6 +1033,9 @@ class CertiniaTransformer:
                     'unit_price': unit_price,
                     'line_amount': net_value,
                     'tax_amount': tax_value,
+                    'tax_type': line_tax['tax_type'],
+                    'tax_code': line_tax['tax_code'],
+                    'tax_percentage': line_tax['tax_percentage'],
                     'description': line.get('fferpcore__LineDescription__c', ''),
                     'debit_credit_indicator': 'C',  # Sales invoices credit revenue
                 })
@@ -984,6 +1128,9 @@ class CertiniaTransformer:
                     'description': line.get('c2g__LineDescription__c', ''),
                     'debit_amount': debit_amount,
                     'credit_amount': credit_amount,
+                    'tax_type': self.DEFAULT_TAX_TYPE,
+                    'tax_code': self.DEFAULT_TAX_CODE,
+                    'tax_percentage': 0,
                     'debit_credit_indicator': 'D' if debit_amount > 0 else 'C'
                 })
                 
@@ -1067,6 +1214,9 @@ class CertiniaTransformer:
                     'unit_price': unit_price,
                     'line_amount': net_value,
                     'tax_amount': tax_value,
+                    'tax_type': '100' if tax_value else self.DEFAULT_TAX_TYPE,
+                    'tax_code': self.DEFAULT_TAX_CODE,
+                    'tax_percentage': round((tax_value / net_value) * 100, 2) if net_value and tax_value else 0,
                     'description': line.get('c2g__LineDescription__c', ''),
                     'debit_credit_indicator': 'D',  # Purchase invoices debit expense
                 })
@@ -1094,6 +1244,7 @@ class CertiniaTransformer:
     def _transform_tax_codes(self, data: Dict) -> List[Dict]:
         """Transform Salesforce tax codes to SAF-T tax table entries"""
         transformed = []
+        seen_codes = set()
         for tax_code in data.get('tax_codes', []):
             # Get the most recent tax rate from nested relationship
             tax_rate = 0.0
@@ -1102,13 +1253,34 @@ class CertiniaTransformer:
                 tax_rates = tax_rates_obj.get('records', [])
                 if tax_rates:
                     tax_rate = self._parse_decimal(tax_rates[0].get('c2g__Rate__c', 0))
-            
+
+            normalized_tax = self._build_tax_info(
+                tax_code=tax_code.get('c2g__StandardCodeID__c'),
+                tax_type='100',
+                tax_percentage=tax_rate,
+            )
+            lookup_key = (normalized_tax['tax_type'], normalized_tax['tax_code'])
+            if lookup_key in seen_codes:
+                continue
+
+            seen_codes.add(lookup_key)
             transformed.append({
-                'tax_type': '100',
-                'tax_code': tax_code.get('c2g__StandardCodeID__c', 'STD'),
+                'tax_type': normalized_tax['tax_type'],
+                'tax_code': normalized_tax['tax_code'],
                 'description': tax_code.get('c2g__Description__c', ''),
-                'tax_percentage': tax_rate,
+                'tax_percentage': normalized_tax['tax_percentage'],
                 'base_rate': tax_rate / 100 if tax_rate > 1 else tax_rate,
+                'country': 'BG'
+            })
+
+        default_key = (self.DEFAULT_TAX_TYPE, self.DEFAULT_TAX_CODE)
+        if default_key not in seen_codes:
+            transformed.append({
+                'tax_type': self.DEFAULT_TAX_TYPE,
+                'tax_code': self.DEFAULT_TAX_CODE,
+                'description': 'No tax code defined',
+                'tax_percentage': 0.0,
+                'base_rate': 0.0,
                 'country': 'BG'
             })
         
@@ -1123,7 +1295,7 @@ class CertiniaTransformer:
                 'description': product.get('Name', ''),
                 'product_commodity_code': '0',
                 'uom_base': 'HUR',
-                'uom_standard': 'ЧАС',
+                'uom_standard': 'HUR',
                 'uom_conversion_factor': '1',
                 'tax_type': '100',
                 'tax_code': '100211'
