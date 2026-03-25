@@ -371,6 +371,114 @@ class CertiniaTransformer:
             )
 
         return tax_map
+
+    def _build_supplier_id_lookup(self, accounts: List[Dict[str, Any]],
+                                  referenced_supplier_account_ids: frozenset[str] | None = None) -> Dict[str, str]:
+        """Build a lookup of Salesforce account Id to exported supplier identifier."""
+        supplier_id_lookup: Dict[str, str] = {}
+        referenced_supplier_account_ids = referenced_supplier_account_ids or frozenset()
+
+        for account in accounts:
+            account_id = account.get('Id')
+            if not account_id:
+                continue
+
+            is_supplier_record = self._get_record_type(account) == 'Supplier Data Management'
+            is_referenced_supplier = account_id in referenced_supplier_account_ids
+
+            if not is_supplier_record and not is_referenced_supplier:
+                continue
+
+            acc_number = account.get('AccountNumber', account_id)
+            vat_registration = account.get('fferpcore__VatRegistrationNumber__c', '')
+            tax_id = account.get('c2g__CODATaxpayerIdentificationNumber__c', '')
+            group_record = account.get('F_Group__r', {})
+            group = group_record.get('Name', '') if isinstance(group_record, dict) else ''
+            name = account.get('Name', '')
+
+            supplier_id_lookup[account_id] = self._format_customer_supplier_id(
+                vat_registration or tax_id,
+                group,
+                name,
+                acc_number,
+            )
+
+        return supplier_id_lookup
+
+    def _get_business_partner_role(self, account: Dict[str, Any]) -> str:
+        """Classify an account as customer or supplier using group, record type, and controls."""
+        group_record = account.get('F_Group__r', {})
+        group_name = group_record.get('Name', '') if isinstance(group_record, dict) else ''
+        if group_name.startswith('VEN_'):
+            return 'supplier'
+        if group_name.startswith('CUS_'):
+            return 'customer'
+
+        record_type = self._get_record_type(account)
+        if record_type == 'Supplier Data Management':
+            return 'supplier'
+        if record_type == 'Standard':
+            return 'customer'
+
+        has_ar_control = bool(self._get_nested_value(account, 'c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c'))
+        has_ap_control = bool(self._get_nested_value(account, 'c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c'))
+        if has_ap_control and not has_ar_control:
+            return 'supplier'
+        if has_ar_control and not has_ap_control:
+            return 'customer'
+
+        return ''
+
+    def _build_business_partner_lookup(self, accounts: List[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
+        """Build a lookup of Salesforce account Id to exported customer/supplier metadata."""
+        partner_lookup: Dict[str, Dict[str, str]] = {}
+
+        for account in accounts:
+            account_id = account.get('Id')
+            if not account_id:
+                continue
+
+            role = self._get_business_partner_role(account)
+            if not role:
+                continue
+
+            account_number = account.get('AccountNumber', account_id)
+            tax_id = account.get('c2g__CODATaxpayerIdentificationNumber__c', '')
+            group_record = account.get('F_Group__r', {})
+            group_name = group_record.get('Name', '') if isinstance(group_record, dict) else ''
+            name = account.get('Name', '')
+
+            if role == 'supplier':
+                identifier = account.get('fferpcore__VatRegistrationNumber__c', '') or tax_id
+            else:
+                identifier = account.get('c2g__CODAVATRegistrationNumber__c', '') or tax_id
+
+            partner_lookup[account_id] = {
+                'role': role,
+                'partner_id': self._format_customer_supplier_id(identifier, group_name, name, account_number),
+            }
+
+        return partner_lookup
+
+    def _get_cancelled_journal_ids(self, journals: List[Dict[str, Any]]) -> set[str]:
+        """Return journal IDs to exclude when a cancelling/original pair is present in the report."""
+        journal_ids = {journal.get('Id') for journal in journals if journal.get('Id')}
+        excluded_ids: set[str] = set()
+
+        for journal in journals:
+            journal_id = journal.get('Id')
+            original_journal_id = journal.get('c2g__OriginalJournal__c')
+
+            if not journal_id or not original_journal_id:
+                continue
+
+            original_journal_id = str(original_journal_id)
+
+            if original_journal_id in journal_ids:
+                excluded_ids.add(journal_id)
+                excluded_ids.add(original_journal_id)
+
+        return excluded_ids
     
     def _transform_master_files(self, data: Dict) -> Dict[str, List]:
         """Transform master data (accounts, customers, suppliers)"""
@@ -387,6 +495,10 @@ class CertiniaTransformer:
         # This is ~3x faster than calculating separately for each account type
         transaction_lines = data.get('transaction_lines', [])
         accounts = data.get('accounts', [])
+        referenced_supplier_account_ids = frozenset(
+            invoice.get('c2g__Account__c') for invoice in data.get('purchase_invoices', [])
+            if invoice.get('c2g__Account__c')
+        )
         customer_ids = frozenset(
             acc.get('Id') for acc in accounts
             if acc.get('Id') and self._get_record_type(acc) == 'Standard'
@@ -420,6 +532,7 @@ class CertiniaTransformer:
                 accounts,
                 transaction_lines,
                 gl_account_codes,
+                referenced_supplier_account_ids=referenced_supplier_account_ids,
                 precomputed_balances=supplier_balances,
             ),
             'products': self._transform_products(data.get('products', []))
@@ -771,6 +884,7 @@ class CertiniaTransformer:
         return transformed
     
     def _transform_suppliers(self, accounts: List[Dict], transaction_lines: List[Dict], gl_account_codes: Dict[str, str],
+                             referenced_supplier_account_ids: frozenset[str] | None = None,
                              precomputed_balances: Dict[str, Dict] | None = None) -> List[Dict]:
         """Transform supplier accounts with calculated balances
         
@@ -784,10 +898,15 @@ class CertiniaTransformer:
         """
         logger.info("Calculating supplier balances with GL account 401* filter...")
         
+        referenced_supplier_account_ids = referenced_supplier_account_ids or frozenset()
+
         # Pre-filter and build supplier account mapping with frozenset for faster lookups
         supplier_accounts = {
             acc_id: acc for acc in accounts
-            if (acc_id := acc.get('Id')) and self._get_record_type(acc) == 'Supplier Data Management'
+            if (acc_id := acc.get('Id')) and (
+                self._get_record_type(acc) == 'Supplier Data Management' or
+                acc_id in referenced_supplier_account_ids
+            )
         }
         
         logger.info(f"Found {len(supplier_accounts)} supplier accounts")
@@ -825,6 +944,7 @@ class CertiniaTransformer:
             transformed.append({
                 'supplier_id': self._format_customer_supplier_id(vat_registration or tax_id, group, name, acc_number),
                 'source_salesforce_id': account_id,
+                'is_referenced_supplier': account_id in referenced_supplier_account_ids,
                 'account_id': gl_account_id or acc.get('AccountNumber', ''),
                 'supplier_tax_id': vat_registration or tax_id,
                 'company_name': acc.get('Name', ''),
@@ -856,6 +976,13 @@ class CertiniaTransformer:
         journals = data.get('journals', [])
         lines = data.get('journal_lines', [])
         transaction_line_tax_map = self._build_transaction_line_tax_map(data.get('transaction_lines', []))
+        excluded_journal_ids = self._get_cancelled_journal_ids(journals)
+
+        if excluded_journal_ids:
+            logger.info(
+                "Excluding %d journals from GL export because they are part of cancelling/original pairs",
+                len(excluded_journal_ids),
+            )
         
         period_info = self._get_period_info()
         period = period_info['period']
@@ -873,10 +1000,13 @@ class CertiniaTransformer:
             lines_by_journal[journal_id].append(line)
         
         transformed = []
-        transaction_id = 1
         
         for journal in journals_sorted:
             journal_id = journal.get('Id')
+
+            if journal_id in excluded_journal_ids:
+                continue
+
             journal_lines = lines_by_journal.get(journal_id, [])
             
             if not journal_lines:
@@ -889,7 +1019,7 @@ class CertiniaTransformer:
                 'journal_id': journal.get('Name') or journal_id or 'GL',
                 'journal_description': journal.get('c2g__JournalDescription__c', ''),
                 'type':journal.get('c2g__Type__c', ''),
-                'transaction_id': str(transaction_id),
+                'transaction_id': journal.get('Name') or journal_id or 'GL',
                 'period': period,
                 'period_year': period_year,
                 'transaction_date': journal_date,
@@ -953,7 +1083,6 @@ class CertiniaTransformer:
                     append_transaction_line(debit_amount, credit_amount)
 
             transformed.append(transaction)
-            transaction_id += 1
         
         logger.info(f"Transformed {len(transformed)} GL transactions with {sum(len(t['lines']) for t in transformed)} lines")
         return transformed
@@ -1063,6 +1192,7 @@ class CertiniaTransformer:
         """Transform cash entries (payments) to SAF-T format"""
         payments = data.get('payments', [])
         payment_lines = data.get('payment_lines', [])
+        partner_lookup = self._build_business_partner_lookup(data.get('accounts', []))
         
         period_info = self._get_period_info()
         period = period_info['period']
@@ -1098,6 +1228,8 @@ class CertiniaTransformer:
                 cash_value = self._parse_decimal(line.get('c2g__CashEntryValue__c', 0))
                 net_value = self._parse_decimal(line.get('c2g__NetValue__c', 0))
                 line_account_info = line.get('c2g__Account__r') or {}
+                line_account_id = line.get('c2g__Account__c', '')
+                partner_info = partner_lookup.get(line_account_id, {})
                 ar_control = line_account_info.get('c2g__CODAAccountsReceivableControl__r') or {}
                 ap_control = line_account_info.get('c2g__CODAAccountsPayableControl__r') or {}
                 payment_account_id = (
@@ -1124,7 +1256,8 @@ class CertiniaTransformer:
                 transformed_lines.append({
                     'line_number': str(line_number),
                     'account_id': payment_account_id,
-                    'customer_id': line_account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                    'customer_id': partner_info.get('partner_id', '') if partner_info.get('role') == 'customer' else '',
+                    'supplier_id': partner_info.get('partner_id', '') if partner_info.get('role') == 'supplier' else '',
                     'description': line.get('c2g__LineDescription__c', ''),
                     'debit_amount': debit_amount,
                     'credit_amount': credit_amount,
@@ -1140,6 +1273,7 @@ class CertiniaTransformer:
             
             transformed.append({
                 'payment_ref_no': payment.get('Name', ''),
+                'transaction_id': payment.get('Name') or payment_id or '',
                 'payment_date': payment_date,
                 'period': period,
                 'period_year': period_year,
@@ -1158,6 +1292,14 @@ class CertiniaTransformer:
         """Transform purchase invoices (payable invoices) to SAF-T format"""
         invoices = data.get('purchase_invoices', [])
         invoice_lines = data.get('purchase_invoice_lines', [])
+        referenced_supplier_account_ids = frozenset(
+            invoice.get('c2g__Account__c') for invoice in invoices
+            if invoice.get('c2g__Account__c')
+        )
+        supplier_id_lookup = self._build_supplier_id_lookup(
+            data.get('accounts', []),
+            referenced_supplier_account_ids=referenced_supplier_account_ids,
+        )
         
         period_info = self._get_period_info()
         period = period_info['period']
@@ -1230,7 +1372,7 @@ class CertiniaTransformer:
                 'invoice_date': invoice_date,
                 'period': period,
                 'period_year': period_year,
-                'supplier_id': account_info.get('c2g__CODATaxpayerIdentificationNumber__c', ''),
+                'supplier_id': supplier_id_lookup.get(invoice.get('c2g__Account__c', ''), ''),
                 'supplier_name': account_info.get('Name', '') or invoice.get('c2g__Account__r.Name', ''),
                 'gl_posting_date': invoice_date,
                 'system_id': invoice_id,

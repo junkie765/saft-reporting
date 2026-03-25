@@ -188,6 +188,61 @@ class TestBalanceLogic(unittest.TestCase):
         self.assertEqual(transformed[0]['journal_id'], 'Actual Journal Name')
         self.assertEqual(transformed[0]['lines'][0]['account_id'], '5030')
 
+    def test_gl_entries_exclude_cancelling_journal_pairs(self):
+        """Cancelling journals and their originals should both be omitted from GL export."""
+        data = {
+            'journals': [
+                {
+                    'Id': 'J1',
+                    'Name': 'Original Journal',
+                    'c2g__JournalDate__c': '2025-05-15',
+                    'c2g__Reference__c': 'Original entry',
+                },
+                {
+                    'Id': 'J2',
+                    'Name': 'Cancelling Journal',
+                    'c2g__JournalDate__c': '2025-05-16',
+                    'c2g__Reference__c': 'Reversal entry',
+                    'c2g__OriginalJournal__c': 'J1',
+                },
+                {
+                    'Id': 'J3',
+                    'Name': 'Keep Journal',
+                    'c2g__JournalDate__c': '2025-05-17',
+                    'c2g__Reference__c': 'Keep entry',
+                },
+            ],
+            'journal_lines': [
+                {
+                    'c2g__Journal__c': 'J1',
+                    'c2g__Debits__c': 10,
+                    'c2g__Credits__c': 0,
+                    'c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c': '5030',
+                    'c2g__LineDescription__c': 'Original line',
+                },
+                {
+                    'c2g__Journal__c': 'J2',
+                    'c2g__Debits__c': 0,
+                    'c2g__Credits__c': 10,
+                    'c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c': '5030',
+                    'c2g__LineDescription__c': 'Cancelling line',
+                },
+                {
+                    'c2g__Journal__c': 'J3',
+                    'c2g__Debits__c': 5,
+                    'c2g__Credits__c': 0,
+                    'c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c': '411',
+                    'c2g__LineDescription__c': 'Keep line',
+                },
+            ],
+        }
+
+        transformed = self.transformer._transform_gl_entries(data)
+
+        self.assertEqual(len(transformed), 1)
+        self.assertEqual(transformed[0]['journal_id'], 'Keep Journal')
+        self.assertEqual(transformed[0]['lines'][0]['account_id'], '411')
+
     def test_transaction_line_tax_uses_taxcode1_standard_code(self):
         """Transaction-line tax must come from TaxCode1.StandardCodeID."""
         tax_info = self.transformer._extract_transaction_line_tax_info({
@@ -577,9 +632,19 @@ class TestBalanceLogic(unittest.TestCase):
     def test_purchase_invoices_use_payable_control_account_for_invoice_account_id(self):
         """Purchase invoice header AccountID should come from the supplier payable control account."""
         data = {
+            'accounts': [{
+                'Id': 'SUP1',
+                'Name': 'Supplier 1',
+                'AccountNumber': 'SUP-001',
+                'fferpcore__VatRegistrationNumber__c': '201234567',
+                'c2g__CODATaxpayerIdentificationNumber__c': '201234567',
+                'F_Group__r': {'Name': 'VEN_Local'},
+                'RecordType': {'Name': 'Supplier Data Management'},
+            }],
             'purchase_invoices': [{
                 'Id': 'PI1',
                 'Name': 'PINV-1',
+                'c2g__Account__c': 'SUP1',
                 'c2g__InvoiceDate__c': '2025-05-15',
                 'c2g__Account__r.Name': 'Supplier 1',
                 'c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c': 'SUP-1',
@@ -607,6 +672,48 @@ class TestBalanceLogic(unittest.TestCase):
 
         self.assertEqual(transformed[0]['account_id'], '401')
         self.assertEqual(transformed[0]['supplier_name'], 'Supplier 1')
+        self.assertEqual(transformed[0]['supplier_id'], '10201234567')
+
+    def test_referenced_purchase_invoice_supplier_is_kept_in_master_files_when_zero_balance(self):
+        """Suppliers referenced by purchase invoices must remain in MasterFiles even with zero balances."""
+        certinia_data = {
+            'gl_accounts': [],
+            'transaction_lines': [],
+            'products': [],
+            'accounts': [{
+                'Id': 'SUP1',
+                'Name': 'Supplier 1',
+                'AccountNumber': 'SUP-001',
+                'fferpcore__VatRegistrationNumber__c': '',
+                'c2g__CODATaxpayerIdentificationNumber__c': 'BG175187484',
+                'F_Group__r': {'Name': 'VEN_Local'},
+                'RecordType': {'Name': 'Standard'},
+                'c2g__CODAAccountsPayableControl__r': {'c2g__StandardAccountID__c': '401'},
+            }],
+            'purchase_invoices': [{
+                'Id': 'PI1',
+                'Name': 'PINV-1',
+                'c2g__Account__c': 'SUP1',
+                'c2g__InvoiceDate__c': '2025-05-15',
+            }],
+            'purchase_invoice_lines': [],
+        }
+
+        master_files = self.transformer._transform_master_files(certinia_data)
+
+        self.assertEqual(len(master_files['suppliers']), 1)
+        self.assertEqual(master_files['suppliers'][0]['supplier_id'], '10BG175187484')
+        self.assertTrue(master_files['suppliers'][0]['is_referenced_supplier'])
+
+        generator = SAFTGenerator({})
+        root = ET.Element(f"{{{generator.NAMESPACE}}}AuditFile", nsmap={'nsSAFT': generator.NAMESPACE})
+        suppliers_elem = generator._elem(root, 'Suppliers')
+        generator._add_suppliers(suppliers_elem, master_files['suppliers'])
+
+        namespace = {'ns': generator.NAMESPACE}
+        emitted_suppliers = suppliers_elem.findall('ns:Supplier', namespace)
+        self.assertEqual(len(emitted_suppliers), 1)
+        self.assertEqual(emitted_suppliers[0].findtext('ns:SupplierID', namespaces=namespace), '10BG175187484')
 
     def test_gl_entries_use_nested_standard_account_id_from_rest_query(self):
         """GL journal lines from REST queries should read the nested standard account ID."""
@@ -667,6 +774,21 @@ class TestBalanceLogic(unittest.TestCase):
     def test_payment_lines_use_standard_account_id(self):
         """Payment lines should use the related account control account ID."""
         data = {
+            'accounts': [
+                {
+                    'Id': 'ACC1',
+                    'Name': 'Customer A',
+                    'AccountNumber': 'CUST-001',
+                    'c2g__CODATaxpayerIdentificationNumber__c': 'BG123',
+                    'c2g__CODAVATRegistrationNumber__c': '',
+                    'F_Group__r': {'Name': 'CUS_Local'},
+                    'RecordType': {'Name': 'Standard'},
+                    'c2g__CODAAccountsReceivableControl__r': {
+                        'c2g__StandardAccountID__c': '411',
+                        'c2g__ReportingCode__c': '4110001',
+                    },
+                }
+            ],
             'payments': [
                 {
                     'Id': 'PAY1',
@@ -683,6 +805,7 @@ class TestBalanceLogic(unittest.TestCase):
             'payment_lines': [
                 {
                     'c2g__CashEntry__c': 'PAY1',
+                    'c2g__Account__c': 'ACC1',
                     'c2g__CashEntryValue__c': 10,
                     'c2g__NetValue__c': 10,
                     'c2g__LineDescription__c': 'Payment line',
@@ -701,6 +824,94 @@ class TestBalanceLogic(unittest.TestCase):
         transformed = self.transformer._transform_payments(data)
 
         self.assertEqual(transformed[0]['lines'][0]['account_id'], '411')
+        self.assertEqual(transformed[0]['lines'][0]['customer_id'], '10BG123')
+        self.assertEqual(transformed[0]['lines'][0]['supplier_id'], '')
+        self.assertEqual(transformed[0]['transaction_id'], 'PAY-1')
+
+    def test_payment_lines_populate_supplier_id_for_supplier_accounts(self):
+        """Payment lines should emit SupplierID when the settled party is a supplier."""
+        data = {
+            'accounts': [
+                {
+                    'Id': 'SUP1',
+                    'Name': 'Supplier A',
+                    'AccountNumber': 'SUP-001',
+                    'fferpcore__VatRegistrationNumber__c': '',
+                    'c2g__CODATaxpayerIdentificationNumber__c': 'BG175187484',
+                    'F_Group__r': {'Name': 'VEN_Local'},
+                    'RecordType': {'Name': 'Standard'},
+                    'c2g__CODAAccountsPayableControl__r': {
+                        'c2g__StandardAccountID__c': '401',
+                        'c2g__ReportingCode__c': '4010001',
+                    },
+                }
+            ],
+            'payments': [
+                {
+                    'Id': 'PAY2',
+                    'Name': 'CSH00018603',
+                    'c2g__Date__c': '2025-05-16',
+                    'c2g__Reference__c': 'Supplier payment',
+                    'c2g__Type__c': 'Payment',
+                    'c2g__Account__c': 'SUP1',
+                    'c2g__Account__r': {
+                        'Name': 'Supplier A',
+                        'c2g__CODATaxpayerIdentificationNumber__c': 'BG175187484',
+                    },
+                }
+            ],
+            'payment_lines': [
+                {
+                    'c2g__CashEntry__c': 'PAY2',
+                    'c2g__Account__c': 'SUP1',
+                    'c2g__CashEntryValue__c': -50,
+                    'c2g__NetValue__c': -50,
+                    'c2g__LineDescription__c': 'Supplier payment line',
+                    'c2g__Account__r': {
+                        'Name': 'Supplier A',
+                        'c2g__CODATaxpayerIdentificationNumber__c': 'BG175187484',
+                        'c2g__CODAAccountsPayableControl__r': {
+                            'c2g__StandardAccountID__c': '401',
+                            'c2g__ReportingCode__c': '4010001',
+                        },
+                    },
+                }
+            ],
+        }
+
+        transformed = self.transformer._transform_payments(data)
+
+        self.assertEqual(transformed[0]['lines'][0]['customer_id'], '')
+        self.assertEqual(transformed[0]['lines'][0]['supplier_id'], '10BG175187484')
+        self.assertEqual(transformed[0]['transaction_id'], 'CSH00018603')
+
+    def test_gl_entries_use_journal_name_as_transaction_id(self):
+        """GL transaction IDs should use the native journal name so source documents can reference them."""
+        data = {
+            'journals': [
+                {
+                    'Id': 'J1',
+                    'Name': 'CSH00018603',
+                    'c2g__JournalDate__c': '2025-05-16',
+                    'c2g__Reference__c': 'Supplier payment',
+                }
+            ],
+            'journal_lines': [
+                {
+                    'c2g__Journal__c': 'J1',
+                    'c2g__Debits__c': 50,
+                    'c2g__Credits__c': 0,
+                    'c2g__GeneralLedgerAccount__r': {
+                        'c2g__StandardAccountID__c': '401',
+                    },
+                    'c2g__LineDescription__c': 'Supplier payment',
+                }
+            ],
+        }
+
+        transformed = self.transformer._transform_gl_entries(data)
+
+        self.assertEqual(transformed[0]['transaction_id'], 'CSH00018603')
 
     def test_address_normalizes_country_name_to_iso_code(self):
         """Customer and supplier address countries must be ISO alpha-2 codes."""

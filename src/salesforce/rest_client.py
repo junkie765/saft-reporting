@@ -318,9 +318,8 @@ class SalesforceRestClient:
             # Build IN clause for period names
             period_in_clause = "('" + "', '".join(period_names) + "')"
             journal_query = f"""
-                SELECT Id, Name, c2g__JournalDescription__c, c2g__JournalDate__c, c2g__Type__c, 
-                       c2g__JournalStatus__c, c2g__Reference__c, c2g__Period__r.Name,
-                       c2g__Period__r.c2g__PeriodNumber__c
+                                    SELECT Id, Name, c2g__JournalDescription__c, c2g__JournalDate__c, c2g__Type__c,
+                                            c2g__OriginalJournal__c, c2g__Reference__c
                 FROM {objects_config['journal_entry']}
                 WHERE c2g__Period__r.Name IN {period_in_clause}
                   AND c2g__JournalStatus__c = 'Complete'
@@ -330,12 +329,13 @@ class SalesforceRestClient:
             logger.info(f"Found {len(data['journals'])} journals.")
             
             line_query = f"""
-                SELECT Id, Name, c2g__Journal__c, c2g__GeneralLedgerAccount__c,
+                SELECT c2g__Journal__c, c2g__GeneralLedgerAccount__c,
                       c2g__GeneralLedgerAccount__r.Name, c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
                       c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                       c2g__LineType__c, c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
+                     c2g__Debits__c, c2g__Credits__c, c2g__LineDescription__c
                 FROM {objects_config['journal_line']}
                 WHERE c2g__Journal__r.c2g__Period__r.Name IN {period_in_clause}
+                AND c2g__Journal__r.c2g__JournalStatus__c = 'Complete'
                   {company_filter_clause}
             """
             data['journal_lines'] = self.query_rest(line_query, "journal lines")
@@ -348,9 +348,9 @@ class SalesforceRestClient:
             logger.info("Extracting sales invoices...")
             invoice_company_filter = f"AND fferpcore__Company__r.c2g__msg_link_ffa_id__c = '{company_id}'" if company_id else ""
             sales_invoice_query = f"""
-                SELECT Id, Name, fferpcore__DocumentDate__c, fferpcore__DocumentDueDate__c, fferpcore__Account__c,
+                  SELECT Id, Name, fferpcore__DocumentDate__c, fferpcore__Account__c,
                        fferpcore__Account__r.Name, fferpcore__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
-                       fferpcore__DocumentStatus__c, CurrencyIsoCode
+                      fferpcore__DocumentStatus__c
                 FROM {objects_config['invoice']}
                 WHERE fferpcore__DocumentDate__c >= {start_str}
                   AND fferpcore__DocumentDate__c <= {end_str}
@@ -361,20 +361,20 @@ class SalesforceRestClient:
             
             invoice_line_company_filter = f"AND fferpcore__BillingDocument__r.fferpcore__Company__r.c2g__msg_link_ffa_id__c = '{company_id}'" if company_id else ""
             sales_invoice_line_query = f"""
-                SELECT Id, Name, fferpcore__BillingDocument__c, c2g__GeneralLedgerAccount__c,
+                SELECT fferpcore__BillingDocument__c, c2g__GeneralLedgerAccount__c,
                        c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
                        c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                      fferpcore__ProductService__c, fferpcore__ProductService__r.ProductCode, fferpcore__ProductService__r.Name,
+                    fferpcore__ProductService__r.ProductCode, fferpcore__ProductService__r.Name,
                       fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__StandardAccountID__c,
                       fferpcore__ProductService__r.c2g__CODASalesRevenueAccount__r.c2g__ReportingCode__c,
                        fferpcore__Quantity__c, fferpcore__UnitPrice__c, fferpcore__NetValue__c,
                       fferpcore__LineDescription__c, fferpcore__TaxCode1__c,
-                      fferpcore__TaxCode1__r.c2g__msg_link_ffa_id__c,
                       fferpcore__TaxCode1__r.c2g__msg_link_ffa_id__r.c2g__StandardCodeID__c,
                        fferpcore__TaxValue1__c
                 FROM {objects_config['invoice_line']}
                 WHERE fferpcore__BillingDocument__r.fferpcore__DocumentDate__c >= {start_str}
                   AND fferpcore__BillingDocument__r.fferpcore__DocumentDate__c <= {end_str}
+                AND fferpcore__BillingDocument__r.fferpcore__DocumentStatus__c = 'Complete'
                   {invoice_line_company_filter}
             """
             data['sales_invoice_lines'] = self.query_rest(sales_invoice_line_query, "sales invoice lines")
@@ -386,14 +386,13 @@ class SalesforceRestClient:
         if 'payments' in sections:
             logger.info("Extracting payment transactions...")
             payment_query = f"""
-                SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Period__r.Name,
+                SELECT Id, Name, c2g__Date__c, c2g__Reference__c, c2g__Type__c,
                        c2g__Account__c, c2g__Account__r.Name,
                        c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
                       c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
                       c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__ReportingCode__c,
-                      c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c,
-                      c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c,
-                       CurrencyIsoCode
+                    c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c,
+                    c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c
                 FROM {objects_config['cash_entry']}
                 WHERE c2g__Date__c >= {start_str}
                   AND c2g__Date__c <= {end_str}
@@ -403,9 +402,8 @@ class SalesforceRestClient:
             
             payment_line_company_filter = f"AND c2g__CashEntry__r.c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
             payment_line_query = f"""
-                SELECT Id, Name, c2g__CashEntry__c,
-                       c2g__BankAccountValue__c, c2g__CashEntryValue__c, c2g__NetValue__c,
-                       c2g__LineDescription__c, c2g__LineNumber__c,
+                  SELECT c2g__CashEntry__c, c2g__CashEntryValue__c, c2g__NetValue__c,
+                      c2g__LineDescription__c,
                        c2g__Account__c, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
                       c2g__Account__r.Name,
                       c2g__Account__r.c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
@@ -437,13 +435,11 @@ class SalesforceRestClient:
         logger.info(f"Note: This may take a while for large datasets...")
         
         transaction_line_query = f"""
-            SELECT Id, c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__LineType__c, c2g__HomeValue__c,
+             SELECT c2g__GeneralLedgerAccount__c, c2g__Account__c, c2g__HomeValue__c,
                    c2g__HomeCredits__c, c2g__HomeDebits__c,
-                                     c2g__TaxCode1__c, c2g__TaxCode1__r.c2g__StandardCodeID__c,
-                   c2g__Transaction__r.c2g__TransactionDate__c, c2g__HomeCurrency__r.Name,
-                   c2g__Transaction__r.c2g__Period__r.Name,
-                   c2g__Transaction__r.c2g__Period__r.c2g__PeriodNumber__c,
-                   c2g__Transaction__r.c2g__Period__r.c2g__YearName__c
+                 c2g__TaxCode1__c, c2g__TaxCode1__r.c2g__StandardCodeID__c,
+                 c2g__Transaction__r.c2g__TransactionDate__c,
+                 c2g__Transaction__r.c2g__Period__r.Name
             FROM c2g__codaTransactionLineItem__c
             WHERE {company_filter_sql}c2g__Transaction__r.c2g__Period__r.Name != null
         """
@@ -462,8 +458,7 @@ class SalesforceRestClient:
             if gl_account_ids:
                 gl_ids_str = "','".join(gl_account_ids)
                 gl_query = f"""
-                    SELECT Id, Name, F_Bulgarian_GLA_Name__c, c2g__ReportingCode__c, c2g__StandardAccountID__c, c2g__Type__c, 
-                           c2g__TrialBalance1__c, c2g__TrialBalance2__c
+                    SELECT Id, Name, F_Bulgarian_GLA_Name__c, c2g__ReportingCode__c, c2g__StandardAccountID__c, c2g__Type__c
                     FROM {objects_config['general_ledger']}
                     WHERE Id IN ('{gl_ids_str}')
                 """
@@ -472,8 +467,7 @@ class SalesforceRestClient:
                 data['gl_accounts'] = []
         else:
             gl_query = f"""
-                SELECT Id, Name, c2g__ReportingCode__c, c2g__StandardAccountID__c, c2g__Type__c, 
-                       c2g__TrialBalance1__c, c2g__TrialBalance2__c
+                SELECT Id, Name, c2g__ReportingCode__c, c2g__StandardAccountID__c, c2g__Type__c
                 FROM {objects_config['general_ledger']}
                 WHERE c2g__ReportingCode__c != null
             """
@@ -481,61 +475,73 @@ class SalesforceRestClient:
         
         # Extract Accounts (Customers/Suppliers)
         if 'customers' in sections or 'suppliers' in sections:
-            # Filter accounts that have transactions in the selected company
-            # Use transaction lines to identify relevant accounts
+            # Filter accounts that are referenced anywhere in the selected export.
+            account_ids = set()
+
             if data.get('transaction_lines'):
-                account_ids = {
-                    line['c2g__Account__c'] 
-                    for line in data['transaction_lines'] 
+                account_ids.update(
+                    line['c2g__Account__c']
+                    for line in data['transaction_lines']
                     if line.get('c2g__Account__c')
-                }
+                )
+
+            account_ids.update(
+                invoice['fferpcore__Account__c']
+                for invoice in data.get('sales_invoices', [])
+                if invoice.get('fferpcore__Account__c')
+            )
+
+            account_ids.update(
+                invoice['c2g__Account__c']
+                for invoice in data.get('purchase_invoices', [])
+                if invoice.get('c2g__Account__c')
+            )
+
+            account_ids.update(
+                payment['c2g__Account__c']
+                for payment in data.get('payments', [])
+                if payment.get('c2g__Account__c')
+            )
+
+            account_ids.update(
+                line['c2g__Account__c']
+                for line in data.get('payment_lines', [])
+                if line.get('c2g__Account__c')
+            )
                 
-                if account_ids:
-                    # Batch the account IDs to avoid SOQL query length limits
-                    account_list = []
-                    batch_size = 200  # Safe batch size for IN clause
-                    account_ids_list = list(account_ids)
-                    
-                    for i in range(0, len(account_ids_list), batch_size):
-                        batch = account_ids_list[i:i + batch_size]
-                        acc_ids_str = "','".join(batch)
-                        account_query = f"""
-                            SELECT Id, Name, AccountNumber, Type, BillingStreet, 
-                                   BillingCity, BillingPostalCode, BillingCountry, Phone,
-                                   c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c, fferpcore__VatRegistrationNumber__c, 
-                                   c2g__CODAECCountryCode__c, F_Group__r.Name, Fax, Website, c2g__CODAInvoiceEmail__c, RecordType.Name,
-                                   c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
-                                   c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c
-                            FROM {objects_config['account']}
-                            WHERE Id IN ('{acc_ids_str}')
-                              AND (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
-                        """
-                        batch_results = self.query_rest(account_query, f"accounts batch {i//batch_size + 1}")
-                        account_list.extend(batch_results)
-                    
-                    data['accounts'] = account_list
-                    logger.info(f"Filtered to {len(account_list)} accounts with transactions in selected company")
-                else:
-                    data['accounts'] = []
+            if account_ids:
+                # Batch the account IDs to avoid SOQL query length limits
+                account_list = []
+                batch_size = 200  # Safe batch size for IN clause
+                account_ids_list = list(account_ids)
+
+                for i in range(0, len(account_ids_list), batch_size):
+                    batch = account_ids_list[i:i + batch_size]
+                    acc_ids_str = "','".join(batch)
+                    account_query = f"""
+                           SELECT Id, Name, AccountNumber, BillingStreet,
+                               BillingCity, BillingPostalCode, BillingCountry, Phone,
+                               c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c, fferpcore__VatRegistrationNumber__c,
+                               F_Group__r.Name, Fax, Website, c2g__CODAInvoiceEmail__c, RecordType.Name,
+                               c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
+                               c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c
+                        FROM {objects_config['account']}
+                        WHERE Id IN ('{acc_ids_str}')
+                          AND (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
+                    """
+                    batch_results = self.query_rest(account_query, f"accounts batch {i//batch_size + 1}")
+                    account_list.extend(batch_results)
+
+                data['accounts'] = account_list
+                logger.info(f"Filtered to {len(account_list)} referenced accounts in selected company")
             else:
-                # Fallback: fetch all accounts if no transaction lines
-                account_query = f"""
-                    SELECT Id, Name, AccountNumber, Type, BillingStreet, 
-                           BillingCity, BillingPostalCode, BillingCountry, Phone,
-                           c2g__CODATaxpayerIdentificationNumber__c, c2g__CODAVATRegistrationNumber__c,
-                           c2g__CODAECCountryCode__c, F_Group__r.Name, Fax, Website, c2g__CODAInvoiceEmail__c, RecordType.Name,
-                           c2g__CODAAccountsReceivableControl__r.c2g__StandardAccountID__c,
-                           c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c
-                    FROM {objects_config['account']}
-                    WHERE (RecordType.Name = 'Standard' OR RecordType.Name = 'Supplier Data Management')
-                """
-                data['accounts'] = self.query_rest(account_query, "accounts")
+                data['accounts'] = []
         else:
             data['accounts'] = []
         
         # Extract Products
         product_query = """
-            SELECT Id, ProductCode, Name, Description, Family
+            SELECT Id, ProductCode, Name
             FROM Product2
             WHERE IsActive = true
         """
@@ -556,11 +562,10 @@ class SalesforceRestClient:
         # Extract Purchase Invoices
         if 'purchase_invoices' in sections:
             purchase_invoice_query = f"""
-              SELECT Id, Name, c2g__Account__c, c2g__Account__r.Name, c2g__Account__r.c2g__CODATaxpayerIdentificationNumber__c,
+                            SELECT Id, Name, c2g__Account__c, c2g__Account__r.Name,
                   c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__StandardAccountID__c,
                   c2g__Account__r.c2g__CODAAccountsPayableControl__r.c2g__ReportingCode__c,
-                       c2g__InvoiceDate__c, c2g__DueDate__c, c2g__InvoiceStatus__c,
-                       c2g__AccountInvoiceNumber__c, c2g__InvoiceDescription__c, CurrencyIsoCode
+                                             c2g__InvoiceDate__c
                 FROM {objects_config['payable_invoice']}
                 WHERE c2g__InvoiceDate__c >= {start_str}
                   AND c2g__InvoiceDate__c <= {end_str}
@@ -571,12 +576,12 @@ class SalesforceRestClient:
             
             purchase_line_company_filter = f"AND c2g__PurchaseInvoice__r.c2g__OwnerCompany__c = '{company_id}'" if company_id else ""
             purchase_invoice_line_query = f"""
-                SELECT Id, Name, c2g__PurchaseInvoice__c, c2g__GeneralLedgerAccount__c,
+                  SELECT c2g__PurchaseInvoice__c, c2g__GeneralLedgerAccount__c,
                        c2g__GeneralLedgerAccount__r.c2g__StandardAccountID__c,
                        c2g__GeneralLedgerAccount__r.c2g__ReportingCode__c,
-                       F_Product__c, F_Product__r.ProductCode, F_Product__r.Name,
+                      F_Product__r.ProductCode, F_Product__r.Name,
                        F_Quantity__c, c2g__NetValue__c,
-                       c2g__LineDescription__c, c2g__InputVATCode__c, c2g__TaxValue1__c
+                      c2g__LineDescription__c, c2g__TaxValue1__c
                 FROM {objects_config['payable_invoice_line']}
                 WHERE c2g__PurchaseInvoice__r.c2g__InvoiceDate__c >= {start_str}
                   AND c2g__PurchaseInvoice__r.c2g__InvoiceDate__c <= {end_str}

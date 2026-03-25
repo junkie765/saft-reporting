@@ -409,7 +409,10 @@ class SAFTGenerator:
         """
         # Filter out suppliers with zero balances
         original_count = len(suppliers)
-        suppliers = [supp for supp in suppliers if not self._has_zero_balance(supp)]
+        suppliers = [
+            supp for supp in suppliers
+            if supp.get('is_referenced_supplier') or not self._has_zero_balance(supp)
+        ]
         
         if original_count > len(suppliers):
             logger.info(f"Adding {len(suppliers)} suppliers (filtered {original_count - len(suppliers)} zero-balance suppliers)...")
@@ -731,7 +734,7 @@ class SAFTGenerator:
             self._elem(pay_elem, "PaymentRefNo", payment['payment_ref_no'])
             self._elem(pay_elem, "Period", str(payment['period']))
             self._elem(pay_elem, "PeriodYear", str(payment['period_year']))
-            self._elem(pay_elem, "TransactionID", payment['payment_ref_no'])
+            self._elem(pay_elem, "TransactionID", payment.get('transaction_id', payment['payment_ref_no']))
             self._elem(pay_elem, "TransactionDate", payment['payment_date'])
             self._elem(pay_elem, "PaymentMethod", "03")  # Bank transfer
             self._elem(pay_elem, "Description", payment.get('reference', 'Payment'))
@@ -747,7 +750,7 @@ class SAFTGenerator:
                 self._elem(line_elem, "AccountID", line['account_id'])
                 self._add_analysis(line_elem)
                 self._elem(line_elem, "CustomerID", line.get('customer_id', ''))
-                self._elem(line_elem, "SupplierID", "")
+                self._elem(line_elem, "SupplierID", line.get('supplier_id', ''))
                 self._elem(line_elem, "TaxPointDate", payment['payment_date'])
                 self._elem(line_elem, "Description", line['description'])
                 self._elem(line_elem, "DebitCreditIndicator", line['debit_credit_indicator'])
