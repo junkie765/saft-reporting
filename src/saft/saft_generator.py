@@ -760,14 +760,6 @@ class SAFTGenerator:
                 self._elem(line_amt, "Amount", f"{amount:.2f}")
                 self._elem(line_amt, "CurrencyCode", "BGN")
                 self._elem(line_amt, "CurrencyAmount", f"{amount:.2f}")
-                
-                tax_info = self._elem(line_elem, "TaxInformation")
-                self._elem(tax_info, "TaxType", "")
-                self._elem(tax_info, "TaxCode", "")
-                tax_amt = self._elem(tax_info, "TaxAmount")
-                self._elem(tax_amt, "Amount", "0.00")
-                self._elem(tax_amt, "CurrencyCode", "BGN")
-                self._elem(tax_amt, "CurrencyAmount", "0.00")
     
     def _add_purchase_invoices(self, parent: ET.Element, invoices: list):
         """

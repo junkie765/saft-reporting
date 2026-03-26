@@ -913,6 +913,37 @@ class TestBalanceLogic(unittest.TestCase):
 
         self.assertEqual(transformed[0]['transaction_id'], 'CSH00018603')
 
+    def test_payment_lines_omit_tax_information(self):
+        """Payment lines must not emit optional tax details."""
+        generator = SAFTGenerator({})
+        root = ET.Element(f"{{{generator.NAMESPACE}}}Root")
+
+        generator._add_payments(root, [{
+            'payment_ref_no': 'PAY-1',
+            'period': 2,
+            'period_year': 2026,
+            'payment_date': '2026-02-03',
+            'reference': 'Payment',
+            'system_id': 'PAY1',
+            'lines': [{
+                'line_number': '1',
+                'account_id': '411',
+                'customer_id': '',
+                'supplier_id': '',
+                'description': 'Payment line',
+                'debit_amount': 100,
+                'credit_amount': 0,
+                'debit_credit_indicator': 'D',
+            }],
+            'total_debit': 100,
+            'total_credit': 0,
+        }])
+
+        namespace = {'ns': generator.NAMESPACE}
+        tax_info = root.find('ns:Payment/ns:PaymentLine/ns:TaxInformation', namespace)
+
+        self.assertIsNone(tax_info)
+
     def test_address_normalizes_country_name_to_iso_code(self):
         """Customer and supplier address countries must be ISO alpha-2 codes."""
         generator = SAFTGenerator({})
