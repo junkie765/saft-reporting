@@ -12,7 +12,7 @@ from src.transformers.certinia_transformer import CertiniaTransformer
 from src.saft.saft_generator import SAFTGenerator
 from src.utils.logger import setup_logger
 from src.utils.excel_exporter import ExcelExporter
-from src.utils.xml_validator import DEFAULT_SCHEMA_PATH, validate_target
+from src.utils.xml_validator import validate_target
 
 
 def load_config(config_path: str = 'config.json') -> dict:
@@ -291,7 +291,7 @@ def main():
             validation_result_path = output_path.with_name(f"{output_path.stem}_validation_result.xml")
             validation_report = validate_target(
                 output_path,
-                schema_path=config.get('validation', {}).get('schema_path', str(DEFAULT_SCHEMA_PATH)),
+                schema_path=config['validation']['schema_path'],
                 result_xml=validation_result_path,
                 salesforce_base_url=rest_client.instance_url,
                 saft_data=saft_data,

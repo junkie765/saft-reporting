@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import json
 from pathlib import Path
 import re
 from typing import Any, Iterable
@@ -9,7 +10,7 @@ from typing import Any, Iterable
 import lxml.etree as ET
 
 
-DEFAULT_SCHEMA_PATH = Path("Supporting_docs/BG_SAFT_Schema_V_1.0.1.xsd")
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"
 INVALID_DOC_NAMESPACE = (
     b'xmlns:doc="urn:schemas-OECD:schema-extensions:documentation xml:lang=en"'
 )
@@ -17,6 +18,24 @@ SANITIZED_DOC_NAMESPACE = (
     b'xmlns:doc="urn:schemas-OECD:schema-extensions:documentation"'
 )
 SALESFORCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$")
+
+
+def _load_default_schema_path(config_path: Path = DEFAULT_CONFIG_PATH) -> Path:
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unable to load validation schema path from {config_path}: {exc}") from exc
+
+    configured_path = config.get("validation", {}).get("schema_path")
+    if not configured_path:
+        raise RuntimeError(
+            f"Missing validation.schema_path in {config_path}"
+        )
+
+    return Path(configured_path)
+
+
+DEFAULT_SCHEMA_PATH = _load_default_schema_path()
 
 
 @dataclass(slots=True)
